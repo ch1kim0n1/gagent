@@ -515,6 +515,67 @@ program
     process.exit(0);
   });
 
+program
+  .command('cost')
+  .description('View LLM spend and cost tracking')
+  .option('--day', 'Show today\'s spend (default)')
+  .option('--week', 'Show this week\'s spend')
+  .option('--month', 'Show this month\'s spend')
+  .option('--by-model', 'Break down by model')
+  .option('--by-operation', 'Break down by operation')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { BudgetLedger } = await import('./core/budget-ledger.js');
+      const ledger = new BudgetLedger('gagent');
+      await ledger.init();
+
+      let spend = 0;
+      if (options.week) {
+        spend = ledger.getWeeklySpend();
+      } else if (options.month) {
+        spend = ledger.getMonthlySpend();
+      } else {
+        spend = ledger.getDailySpend();
+      }
+
+      if (options.json) {
+        const breakdown = {};
+        if (options.byModel) {
+          breakdown['by_model'] = ledger.getSpendByModel();
+        }
+        if (options.byOperation) {
+          breakdown['by_operation'] = ledger.getSpendByScope();
+        }
+        console.log(JSON.stringify({ spend, ...breakdown }, null, 2));
+      } else {
+        const period = options.week ? 'this week' : options.month ? 'this month' : 'today';
+        console.log(chalk.blue(`LLM Spend ${period}: $${spend.toFixed(4)}`));
+        
+        if (options.byModel) {
+          const byModel = ledger.getSpendByModel();
+          console.log(chalk.gray('\nBy model:'));
+          for (const [model, cost] of Object.entries(byModel)) {
+            console.log(`  ${model}: $${(cost as number).toFixed(4)}`);
+          }
+        }
+        
+        if (options.byOperation) {
+          const byOp = ledger.getSpendByScope();
+          console.log(chalk.gray('\nBy operation:'));
+          for (const [op, cost] of Object.entries(byOp)) {
+            console.log(`  ${op}: $${(cost as number).toFixed(4)}`);
+          }
+        }
+      }
+      
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GAgent] Cost query failed:'), error);
+      process.exit(1);
+    }
+  });
+
 function calculateStdDev(values: number[]): number {
   if (values.length === 0) return 0;
   const mean = values.reduce((sum, v) => sum + v, 0) / values.length;

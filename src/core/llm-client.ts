@@ -11,6 +11,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
+import { createLogger, LogLevel } from '../../shared/src/core/structured-logger.js';
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -173,6 +174,7 @@ export class LLMClient {
   private keyUsageCount: Map<string, number> = new Map();
   private currentAnthropicKey: string | null = null;
   private currentOpenAIKey: string | null = null;
+  private logger = createLogger('gagent', { minLevel: 'debug' });
 
   constructor(config: LLMClientConfig = {}) {
     this.config = {
@@ -378,6 +380,13 @@ export class LLMClient {
     const temperature = options.temperature ?? 0.7;
     const startTime = Date.now();
 
+    this.logger.debug('LLM call started', {
+      model: primaryModel,
+      maxTokens,
+      temperature,
+      promptLength: prompt.length,
+    });
+
     // Build model chain: primary model + fallback models
     const modelsToTry = [primaryModel];
     if (this.config.enableModelFallback && this.config.modelFallbackChain) {
@@ -393,11 +402,13 @@ export class LLMClient {
         let outputTokens: number;
 
         if (this.anthropicClient && this.isAnthropicModel(model)) {
+          this.logger.debug('Calling Anthropic API', { model });
           const result = await this.callAnthropic(prompt, model, maxTokens, temperature);
           content = result.content;
           inputTokens = result.inputTokens;
           outputTokens = result.outputTokens;
         } else if (this.openaiClient && this.isOpenAIModel(model)) {
+          this.logger.debug('Calling OpenAI API', { model });
           const result = await this.callOpenAI(prompt, model, maxTokens, temperature);
           content = result.content;
           inputTokens = result.inputTokens;
@@ -424,6 +435,14 @@ export class LLMClient {
           await this.config.onSpend(model, inputTokens, outputTokens, cost);
         }
 
+        this.logger.info('LLM call succeeded', {
+          model,
+          inputTokens,
+          outputTokens,
+          costUsd: cost,
+          latencyMs: latency,
+        });
+
         return {
           content,
           input_tokens: inputTokens,
@@ -433,13 +452,14 @@ export class LLMClient {
           latency_ms: latency,
         };
       } catch (error) {
-        console.warn(`[LLMClient] Model ${model} failed, trying next in chain:`, error);
+        this.logger.warn(`Model ${model} failed`, { error: (error as Error).message });
         lastError = error;
         continue;
       }
     }
 
     // All models failed
+    this.logger.error('All models failed', lastError as Error);
     throw new Error(`All models in fallback chain failed. Last error: ${lastError?.message || 'Unknown error'}`);
   }
 
