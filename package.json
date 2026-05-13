@@ -8,20 +8,49 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "bun test",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "typecheck": "tsc --noEmit",
+    "check:package": "node scripts/quality-gates.js package-contract",
+    "check:docs": "node scripts/quality-gates.js docs",
+    "check:privacy": "node scripts/quality-gates.js privacy",
+    "check:test-isolation": "node scripts/quality-gates.js test-isolation",
+    "check:mcp-contract": "node scripts/quality-gates.js mcp-contract",
+    "check:all": "node scripts/quality-gates.js all",
+    "smoke": "node scripts/quality-gates.js smoke",
+    "eval:record": "node scripts/eval-tools.js record",
+    "eval:list": "node scripts/eval-tools.js list",
+    "eval:summary": "node scripts/eval-tools.js summary",
+    "eval:compare": "node scripts/eval-tools.js compare",
+    "eval:select": "node scripts/eval-tools.js select",
+    "verify": "npm run check:all && npm run typecheck && npm test",
+    "ci:local": "node scripts/quality-gates.js ci-local",
     "lint": "eslint src/**/*.ts",
-    "setup": "bun install && bun run build && bun link"
+    "format": "prettier --write src/**/*.ts",
+    "setup": "npm install && npm run build"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.3",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@types/uuid": "^10.0.0",
+    "chalk": "^4.1.2",
     "commander": "^12.0.0",
-    "chalk": "^5.3.0",
-    "zod": "^3.22.0",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "openai": "^4.0.0",
+    "tiktoken": "^1.0.15",
+    "uuid": "^14.0.0",
+    "zod": "^3.22.0"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.14",
     "@types/node": "^20.0.0",
-    "typescript": "^5.3.0",
-    "bun-types": "latest"
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
+    "jest": "^29.7.0",
+    "prettier": "^3.8.3",
+    "ts-jest": "^29.4.9",
+    "typescript": "^5.3.0"
   },
   "engines": {
     "node": ">=18.0.0"

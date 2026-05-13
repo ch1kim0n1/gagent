@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
-import { Pipeline } from '../src/pipeline/orchestrator.js';
-import { ToolRegistry } from '../src/tools/registry.js';
-import { GAgentConfig } from '../src/config/manager.js';
+import { describe, it, expect, beforeEach } from '@jest/globals';
+import { Pipeline } from '../src/pipeline/orchestrator';
+import { ToolRegistry } from '../src/tools/registry';
+import { GAgentConfig } from '../src/config/manager';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';

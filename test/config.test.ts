@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'bun:test';
-import { GAgentConfig } from '../src/config/manager.js';
+import { describe, it, expect, beforeEach } from '@jest/globals';
+import { GAgentConfig } from '../src/config/manager';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';

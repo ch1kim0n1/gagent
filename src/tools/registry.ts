@@ -1,8 +1,5 @@
 import { spawn } from 'child_process';
-import { promisify } from 'util';
 import { GAgentConfig } from '../config/manager.js';
-
-const execAsync = promisify(require('child_process').exec);
 
 interface ToolInfo {
   installed: boolean;
@@ -31,6 +28,31 @@ export class ToolRegistry {
 
   constructor(config: GAgentConfig) {
     this.config = config;
+  }
+
+  /**
+   * Execute command safely with array-form arguments (no shell interpolation)
+   */
+  private async execSafe(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(command, args);
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout?.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr?.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        resolve({ stdout, stderr });
+      });
+
+      proc.on('error', reject);
+    });
   }
 
   register(id: string, info: RegisteredToolInfo): void {
@@ -62,10 +84,7 @@ export class ToolRegistry {
 
   private async detectGBrain(): Promise<ToolInfo> {
     try {
-      const { stdout } = await execAsync('gbrain --version 2>/dev/null || echo "not found"');
-      if (stdout.includes('not found')) {
-        return { installed: false };
-      }
+      const { stdout } = await this.execSafe('gbrain', ['--version']);
       return {
         installed: true,
         version: stdout.trim(),
@@ -103,27 +122,35 @@ export class ToolRegistry {
     
     try {
       const { existsSync } = await import('fs');
-      const { stdout } = await execAsync(`${name} --version 2>/dev/null || echo "not found"`);
       
-      if (stdout.includes('not found') && !existsSync(toolPath)) {
+      if (!existsSync(toolPath)) {
         return { 
           installed: false,
           message: 'Not yet built (see architecture docs)'
         };
       }
       
+      // Use absolute path to binary instead of PATH lookup
+      const binaryPath = process.platform === 'win32' 
+        ? `${toolPath}/${name}.exe`
+        : `${toolPath}/${name}`;
+      
+      const { stdout } = await this.execSafe(binaryPath, ['--version']);
+      
       return {
         installed: existsSync(toolPath),
         path: toolPath,
-        version: stdout.trim().includes('not found') ? undefined : stdout.trim(),
-        healthy: !stdout.includes('not found'),
-        message: existsSync(toolPath) && stdout.includes('not found') 
+        version: stdout.trim() || undefined,
+        healthy: stdout.trim().length > 0,
+        message: existsSync(toolPath) && stdout.trim().length === 0 
           ? 'Directory exists but binary not linked' 
           : undefined
       };
     } catch {
+      const { existsSync } = await import('fs');
       return { 
-        installed: false,
+        installed: existsSync(toolPath),
+        path: existsSync(toolPath) ? toolPath : undefined,
         message: 'Not yet built (see architecture docs)'
       };
     }
@@ -136,7 +163,7 @@ export class ToolRegistry {
     for (const [name, info] of Object.entries(detected)) {
       if (info.installed && name === 'gbrain') {
         try {
-          const { stdout } = await execAsync('gbrain doctor --json 2>/dev/null || echo "{}"');
+          const { stdout } = await this.execSafe('gbrain', ['doctor', '--json']);
           const doctor = JSON.parse(stdout);
           info.healthy = doctor.status === 'ok';
           info.message = doctor.status === 'ok' ? undefined : doctor.checks?.find((c: any) => !c.ok)?.message;
@@ -180,7 +207,7 @@ export class ToolRegistry {
     // Sync GBrain (central memory)
     if (this.config.isToolEnabled('gbrain')) {
       try {
-        await execAsync('gbrain sync');
+        await this.execSafe('gbrain', ['sync']);
       } catch {
         // Ignore errors
       }
@@ -189,7 +216,8 @@ export class ToolRegistry {
     // Sync GStack learnings to GBrain
     if (this.config.isToolEnabled('gstack') && this.config.isToolEnabled('gbrain')) {
       try {
-        await execAsync('gbrain sources add ~/.gstack --strategy memory');
+        const home = process.env.HOME || process.env.USERPROFILE;
+        await this.execSafe('gbrain', ['sources', 'add', `${home}/.gstack`, '--strategy', 'memory']);
       } catch {
         // May already be added
       }
