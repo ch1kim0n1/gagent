@@ -1,0 +1,76 @@
+#!/bin/bash
+set -e
+
+echo "GAgent Installer"
+echo "================"
+echo ""
+
+# Detect OS
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+echo "Platform: $OS $ARCH"
+
+# Check for Bun
+if ! command -v bun &> /dev/null; then
+    echo "Bun not found. Installing..."
+    curl -fsSL https://bun.sh/install | bash
+    export PATH="$HOME/.bun/bin:$PATH"
+fi
+
+echo "Bun: $(bun --version)"
+
+# Install dependencies
+echo "Installing dependencies..."
+bun install
+
+# Build
+echo "Building..."
+bun run build
+
+# Link binary
+echo "Linking gagent..."
+bun link
+
+# Detect existing tools
+echo ""
+echo "Detecting existing tools..."
+
+# GBrain
+if command -v gbrain &> /dev/null; then
+    echo "  GBrain: $(gbrain --version 2>/dev/null || echo 'installed')"
+else
+    echo "  GBrain: not found (install separately)"
+fi
+
+# GStack
+if [ -d "$HOME/.claude/skills/gstack" ]; then
+    echo "  GStack: installed at ~/.claude/skills/gstack"
+else
+    echo "  GStack: not found (install separately)"
+fi
+
+# Check for other tools (not yet built)
+for tool in gorchestrator gmirror gtom glearn; do
+    if [ -d "$HOME/.${tool}" ] || command -v $tool &> /dev/null; then
+        echo "  ${tool}: found"
+    else
+        echo "  ${tool}: not yet built (see architecture docs)"
+    fi
+done
+
+# Initialize config
+echo ""
+echo "Initializing gagent config..."
+gagent init --detect-only
+
+echo ""
+echo "Installation complete!"
+echo ""
+echo "Next steps:"
+echo "  1. gagent health       # Check all tools"
+echo "  2. gagent config       # Review configuration"
+echo "  3. gagent serve        # Start MCP server"
+echo ""
+echo "To use with Claude Code, add to ~/.claude/server.json:"
+echo '  { "mcpServers": { "gagent": { "command": "gagent", "args": ["serve"] } } }'
