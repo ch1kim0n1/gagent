@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
+import { createPersistenceManager } from '../../../shared/src/core/persistence-manager.js';
 
 const ConfigSchema = z.object({
   version: z.string(),
@@ -29,10 +30,27 @@ export type GAgentConfigType = z.infer<typeof ConfigSchema>;
 export class GAgentConfig {
   private configPath: string;
   private config: GAgentConfigType;
+  private persistenceManager: ReturnType<typeof createPersistenceManager<GAgentConfigType>>;
 
   constructor(options: { configPath?: string } = {}) {
     this.configPath = options.configPath ?? join(homedir(), '.gagent', 'config.json');
     this.config = this.load();
+    
+    // Initialize persistence manager
+    this.persistenceManager = createPersistenceManager(
+      this.config,
+      'gagent',
+      {
+        statePath: this.configPath.replace('.json', '-state.json'),
+        autoSave: true,
+        saveInterval: 30000, // Save every 30 seconds
+      }
+    );
+    
+    // Initialize persistence (async, don't await in constructor)
+    this.persistenceManager.init().catch(error => {
+      console.error('[GAgentConfig] Failed to initialize persistence:', error);
+    });
   }
 
   private load(): GAgentConfigType {
@@ -83,12 +101,29 @@ export class GAgentConfig {
     await this.save();
   }
 
+  private persistenceInitialized = false;
+
   async save(): Promise<void> {
     const dir = join(homedir(), '.gagent');
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
     writeFileSync(this.configPath, JSON.stringify(this.config, null, 2));
+
+    // Lazy-init persistence manager so callers don't have to remember.
+    if (!this.persistenceInitialized) {
+      try {
+        await this.persistenceManager.init();
+        this.persistenceInitialized = true;
+      } catch {
+        // Persistence is best-effort; fall through.
+      }
+    }
+    try {
+      await this.persistenceManager.updateState(() => this.config);
+    } catch {
+      // Best-effort persistence; in-memory and file-on-disk are already updated.
+    }
   }
 
   get(path: string): any {
@@ -100,7 +135,7 @@ export class GAgentConfig {
     return current;
   }
 
-  set(path: string, value: any): void {
+  async set(path: string, value: any): Promise<void> {
     const parts = path.split('.');
     let current: any = this.config;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -108,6 +143,9 @@ export class GAgentConfig {
       current = current[parts[i]];
     }
     current[parts[parts.length - 1]] = value;
+    
+    // Persist after setting
+    await this.save();
   }
 
   view(): string {
@@ -115,7 +153,12 @@ export class GAgentConfig {
   }
 
   getRaw(): GAgentConfigType {
-    return this.config;
+    // Return from persistence manager if available, otherwise from memory
+    try {
+      return this.persistenceManager.getState();
+    } catch {
+      return this.config;
+    }
   }
 
   isToolEnabled(name: string): boolean {

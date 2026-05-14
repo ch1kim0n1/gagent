@@ -26,6 +26,6 @@ describe('GAgent MCP Server', () => {
 
   it('declares required schemas for state-changing tools', () => {
     expect(serverSource).toContain("required: ['task']");
-    expect(serverSource).toContain("required: ['key', 'value']");
+    expect(serverSource).toContain("required: ['key']");
   });
 });

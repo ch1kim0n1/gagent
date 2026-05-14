@@ -175,7 +175,7 @@ export class HealthChecker {
 
       const response = await fetch(`${gbrainEndpoint}/health`, {
         method: 'GET',
-        timeout: 5000,
+        signal: AbortSignal.timeout(5000),
       });
 
       const latency = Date.now() - startTime;

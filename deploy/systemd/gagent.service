@@ -1,0 +1,32 @@
+[Unit]
+Description=GAgent - Tool registry and management service for G-Stack
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=gagent
+Group=gagent
+WorkingDirectory=/opt/gagent
+Environment=NODE_ENV=production
+Environment=HEALTH_PORT=8080
+EnvironmentFile=/etc/gagent/gagent.env
+ExecStart=/usr/bin/node /opt/gagent/dist/serve.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gagent
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gagent /var/log/gagent
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

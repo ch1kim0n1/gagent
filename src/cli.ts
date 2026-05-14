@@ -392,90 +392,127 @@ program
   });
 
 program
-  .command('replay <receipt_id>')
-  .description('Replay a previous execution using stored receipt')
+  .command('replay <id>')
+  .description('Replay a previous execution using stored receipt or corpus hash')
+  .option('--corpus <path>', 'Path to corpus directory (for hash replay)', './.gbrain-corpus')
   .option('--dry-run', 'Show what would be done without executing')
   .option('--cycles <n>', 'Number of cycles to run (for statistical comparison)', '1')
   .option('--budget-usd <amount>', 'Maximum budget in USD', '10')
-  .action(async (receiptId, options) => {
-    console.log(chalk.blue(`[GAgent] Replaying receipt: ${receiptId}`));
+  .action(async (id, options) => {
+    // Check if ID looks like a hash (64 hex chars) or receipt ID
+    const isHash = /^[a-f0-9]{64}$/i.test(id);
 
-    try {
-      const fs = await import('fs/promises');
-      const path = await import('path');
-      
-      // Find receipt in weekly receipt files
-      const now = new Date();
-      const year = now.getFullYear();
-      const weekNum = Math.ceil((now.getTime() - new Date(year, 0, 1).getTime()) / (7 * 24 * 60 * 60 * 1000));
-      const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
-      
-      const receiptPath = path.join(process.cwd(), 'gagent', 'test', 'baselines', `receipts-${week}.jsonl`);
-      
-      const content = await fs.readFile(receiptPath, 'utf8');
-      const lines = content.trim().split('\n').filter((l: string) => l);
-      
-      let targetReceipt = null;
-      for (const line of lines) {
-        const receipt = JSON.parse(line);
-        if (receipt.id === receiptId || receipt.request_id === receiptId) {
-          targetReceipt = receipt;
-          break;
+    if (isHash) {
+      // Use ReplayManager for hash-based replay
+      try {
+        const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
+        const replayManager = new ReplayManager(options.corpus);
+        
+        const result = await replayManager.retrieve(id);
+        
+        if (!result.found) {
+          console.error(chalk.red(`[GAgent] Hash not found in corpus: ${id}`));
+          process.exit(1);
         }
-      }
-      
-      if (!targetReceipt) {
-        console.error(chalk.red(`[GAgent] Receipt not found: ${receiptId}`));
-        process.exit(1);
-      }
-      
-      if (options.dryRun) {
-        console.log(chalk.yellow('[GAgent] Dry run - would replay:'));
-        console.log(JSON.stringify(targetReceipt, null, 2));
+
+        if (options.dryRun) {
+          console.log(chalk.yellow('[GAgent] Dry run - would replay:'));
+          console.log(JSON.stringify(result, null, 2));
+          process.exit(0);
+        }
+
+        console.log(chalk.blue(`[GAgent] Replaying hash: ${id}`));
+        console.log(chalk.gray(`Tool: ${result.metadata.tool}`));
+        console.log(chalk.gray(`Timestamp: ${result.metadata.timestamp}`));
+        console.log(chalk.gray(`Task: ${result.metadata.task || 'N/A'}`));
+        console.log(chalk.green('\nContent:'));
+        console.log(result.content);
         process.exit(0);
-      }
-      
-      console.log(chalk.gray(`Task: ${targetReceipt.task}`));
-      console.log(chalk.gray(`Original timestamp: ${targetReceipt.timestamp}`));
-      
-      // Re-execute with original parameters
-      const cycles = parseInt(options.cycles);
-      if (isNaN(cycles) || cycles < 1) {
-        console.error(chalk.red('[GAgent] --cycles must be a positive integer'));
+      } catch (error) {
+        console.error(chalk.red('[GAgent] Replay failed:'), error);
         process.exit(1);
       }
+    } else {
+      // Use receipt file for receipt ID replay
+      console.log(chalk.blue(`[GAgent] Replaying receipt: ${id}`));
 
-      const budget = parseFloat(options.budgetUsd);
-      if (isNaN(budget) || budget <= 0) {
-        console.error(chalk.red('[GAgent] --budget-usd must be a positive number'));
+      try {
+        const fs = await import('fs/promises');
+        const path = await import('path');
+        
+        // Find receipt in weekly receipt files
+        const now = new Date();
+        const year = now.getFullYear();
+        const weekNum = Math.ceil((now.getTime() - new Date(year, 0, 1).getTime()) / (7 * 24 * 60 * 60 * 1000));
+        const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
+        
+        const receiptPath = path.join(process.cwd(), 'gagent', 'test', 'baselines', `receipts-${week}.jsonl`);
+        
+        const content = await fs.readFile(receiptPath, 'utf8');
+        const lines = content.trim().split('\n').filter((l: string) => l);
+        
+        let targetReceipt = null;
+        for (const line of lines) {
+          const receipt = JSON.parse(line);
+          if (receipt.id === id || receipt.request_id === id) {
+            targetReceipt = receipt;
+            break;
+          }
+        }
+        
+        if (!targetReceipt) {
+          console.error(chalk.red(`[GAgent] Receipt not found: ${id}`));
+          process.exit(1);
+        }
+        
+        if (options.dryRun) {
+          console.log(chalk.yellow('[GAgent] Dry run - would replay:'));
+          console.log(JSON.stringify(targetReceipt, null, 2));
+          process.exit(0);
+        }
+        
+        console.log(chalk.gray(`Task: ${targetReceipt.task}`));
+        console.log(chalk.gray(`Original timestamp: ${targetReceipt.timestamp}`));
+        
+        // Re-execute with original parameters
+        const cycles = parseInt(options.cycles);
+        if (isNaN(cycles) || cycles < 1) {
+          console.error(chalk.red('[GAgent] --cycles must be a positive integer'));
+          process.exit(1);
+        }
+
+        const budget = parseFloat(options.budgetUsd);
+        if (isNaN(budget) || budget <= 0) {
+          console.error(chalk.red('[GAgent] --budget-usd must be a positive number'));
+          process.exit(1);
+        }
+
+        const result = await pipeline.execute({
+          task: targetReceipt.task,
+          parallel: targetReceipt.options?.parallel || 1,
+          verify: targetReceipt.options?.verify || false,
+          cognitiveCheck: targetReceipt.options?.cognitiveCheck || false,
+          learn: targetReceipt.options?.learn || false,
+          dryRun: false,
+          cycles,
+          budgetUsd: budget,
+        });
+        
+        console.log('');
+        if (result.success) {
+          console.log(chalk.green('✓ Replay completed'));
+          console.log(`  Winner: ${result.winner?.id || 'N/A'}`);
+          console.log(`  Score: ${result.winner?.score || 'N/A'}`);
+        } else {
+          console.log(chalk.red('✗ Replay failed'));
+          console.log(`  Error: ${result.error}`);
+        }
+        
+        process.exit(0);
+      } catch (error) {
+        console.error(chalk.red('[GAgent] Replay failed:'), error);
         process.exit(1);
       }
-
-      const result = await pipeline.execute({
-        task: targetReceipt.task,
-        parallel: targetReceipt.options?.parallel || 1,
-        verify: targetReceipt.options?.verify || false,
-        cognitiveCheck: targetReceipt.options?.cognitiveCheck || false,
-        learn: targetReceipt.options?.learn || false,
-        dryRun: false,
-        cycles,
-        budgetUsd: budget,
-      });
-      
-      console.log('');
-      if (result.success) {
-        console.log(chalk.green('✓ Replay completed'));
-        console.log(`  Winner: ${result.winner?.id || 'N/A'}`);
-        console.log(`  Score: ${result.winner?.score || 'N/A'}`);
-      } else {
-        console.log(chalk.red('✗ Replay failed'));
-        console.log(`  Error: ${result.error}`);
-      }
-      
-      process.exit(0);
-    } catch (error) {
-      console.error(chalk.red('[GAgent] Replay failed:'), error);
-      process.exit(1);
     }
   });
 
@@ -526,8 +563,8 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
-      const { BudgetLedger } = await import('./core/budget-ledger.js');
-      const ledger = new BudgetLedger('gagent');
+      const { BudgetLedger } = await import('../../shared/src/core/budget-ledger.js');
+      const ledger = new BudgetLedger({ max_budget_usd: 1000 }, 'gagent');
       await ledger.init();
 
       let spend = 0;
@@ -540,12 +577,12 @@ program
       }
 
       if (options.json) {
-        const breakdown = {};
+        const breakdown: Record<string, any> = {};
         if (options.byModel) {
           breakdown['by_model'] = ledger.getSpendByModel();
         }
         if (options.byOperation) {
-          breakdown['by_operation'] = ledger.getSpendByScope();
+          breakdown['by_operation'] = ledger.getSpendByModel();
         }
         console.log(JSON.stringify({ spend, ...breakdown }, null, 2));
       } else {
@@ -561,7 +598,7 @@ program
         }
         
         if (options.byOperation) {
-          const byOp = ledger.getSpendByScope();
+          const byOp = ledger.getSpendByModel();
           console.log(chalk.gray('\nBy operation:'));
           for (const [op, cost] of Object.entries(byOp)) {
             console.log(`  ${op}: $${(cost as number).toFixed(4)}`);
@@ -572,6 +609,179 @@ program
       process.exit(0);
     } catch (error) {
       console.error(chalk.red('[GAgent] Cost query failed:'), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('trend')
+  .description('Show agent run success rate trend over time')
+  .option('--window <days>', 'Number of days to look back', '7')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      const windowDays = parseInt(options.window);
+      if (isNaN(windowDays) || windowDays < 1) {
+        console.error(chalk.red('[GAgent] --window must be a positive integer'));
+        process.exit(1);
+      }
+
+      const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+      const registry = new ReceiptRegistry('gagent');
+
+      const now = new Date();
+      const start = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+      const receipts = await registry.getAllBetween(start, now);
+
+      const total = receipts.length;
+      const passed = receipts.filter((r: any) => r.exit_code === 0).length;
+      const successRate = total === 0 ? 0 : passed / total;
+
+      // Determine trend by comparing first half vs second half of window
+      let trend: 'stable' | 'improving' | 'degrading' = 'stable';
+      if (total >= 4) {
+        const mid = Math.floor(total / 2);
+        const firstHalf = receipts.slice(0, mid);
+        const secondHalf = receipts.slice(mid);
+        const firstRate = firstHalf.filter((r: any) => r.exit_code === 0).length / firstHalf.length;
+        const secondRate = secondHalf.filter((r: any) => r.exit_code === 0).length / secondHalf.length;
+        if (secondRate - firstRate > 0.05) trend = 'improving';
+        else if (firstRate - secondRate > 0.05) trend = 'degrading';
+      }
+
+      const result = { window_days: windowDays, success_rate: successRate, trend };
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue('[GAgent] Success Rate Trend'));
+        console.log(`  Window: ${windowDays} days`);
+        console.log(`  Runs: ${total}`);
+        console.log(`  Success rate: ${(successRate * 100).toFixed(1)}%`);
+        const trendColor = trend === 'improving' ? 'green' : trend === 'degrading' ? 'red' : 'yellow';
+        console.log(`  Trend: ${chalk[trendColor](trend)}`);
+      }
+
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GAgent] Trend query failed:'), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('regress')
+  .description('Run a regression check comparing current performance to baseline')
+  .option('--baseline <rate>', 'Baseline pass rate to compare against', '0.7')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      const baselineRate = parseFloat(options.baseline);
+      if (isNaN(baselineRate) || baselineRate < 0 || baselineRate > 1) {
+        console.error(chalk.red('[GAgent] --baseline must be a number between 0 and 1'));
+        process.exit(1);
+      }
+
+      const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+      const registry = new ReceiptRegistry('gagent');
+
+      const now = new Date();
+      const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const receipts = await registry.getAllBetween(start, now);
+
+      const total = receipts.length;
+      const passed = receipts.filter((r: any) => r.exit_code === 0).length;
+      const currentRate = total === 0 ? 0 : passed / total;
+      const delta = currentRate - baselineRate;
+      const regressionPassed = currentRate >= baselineRate;
+
+      const result = {
+        passed: regressionPassed,
+        current_rate: currentRate,
+        baseline_rate: baselineRate,
+        delta,
+      };
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue('[GAgent] Regression Check'));
+        const statusColor = regressionPassed ? 'green' : 'red';
+        const statusLabel = regressionPassed ? '✓ PASSED' : '✗ FAILED';
+        console.log(`  Status: ${chalk[statusColor](statusLabel)}`);
+        console.log(`  Current rate: ${(currentRate * 100).toFixed(1)}%`);
+        console.log(`  Baseline rate: ${(baselineRate * 100).toFixed(1)}%`);
+        const deltaLabel = delta >= 0 ? `+${(delta * 100).toFixed(1)}%` : `${(delta * 100).toFixed(1)}%`;
+        console.log(`  Delta: ${delta >= 0 ? chalk.green(deltaLabel) : chalk.red(deltaLabel)}`);
+      }
+
+      process.exit(regressionPassed ? 0 : 1);
+    } catch (error) {
+      console.error(chalk.red('[GAgent] Regression check failed:'), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('drift')
+  .description('Detect if agent behavior has drifted from baseline')
+  .option('--window <n>', 'Number of recent runs to check', '10')
+  .option('--baseline-error-rate <rate>', 'Expected baseline error rate', '0.1')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      const windowSize = parseInt(options.window);
+      if (isNaN(windowSize) || windowSize < 1) {
+        console.error(chalk.red('[GAgent] --window must be a positive integer'));
+        process.exit(1);
+      }
+
+      const baselineErrorRate = parseFloat(options.baselineErrorRate);
+      if (isNaN(baselineErrorRate) || baselineErrorRate < 0 || baselineErrorRate > 1) {
+        console.error(chalk.red('[GAgent] --baseline-error-rate must be a number between 0 and 1'));
+        process.exit(1);
+      }
+
+      const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+      const registry = new ReceiptRegistry('gagent');
+
+      const now = new Date();
+      const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const allReceipts = await registry.getAllBetween(start, now);
+
+      // Take the last N receipts
+      const recent = allReceipts.slice(-windowSize);
+      const total = recent.length;
+      const errors = recent.filter((r: any) => r.exit_code !== 0).length;
+      const errorRate = total === 0 ? 0 : errors / total;
+
+      const DRIFT_THRESHOLD = 0.1;
+      const drifted = Math.abs(errorRate - baselineErrorRate) > DRIFT_THRESHOLD;
+
+      const result = {
+        drifted,
+        error_rate: errorRate,
+        baseline_error_rate: baselineErrorRate,
+      };
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue('[GAgent] Drift Detection'));
+        const driftColor = drifted ? 'red' : 'green';
+        const driftLabel = drifted ? '⚠ DRIFT DETECTED' : '✓ No drift';
+        console.log(`  Status: ${chalk[driftColor](driftLabel)}`);
+        console.log(`  Runs checked: ${total}`);
+        console.log(`  Current error rate: ${(errorRate * 100).toFixed(1)}%`);
+        console.log(`  Baseline error rate: ${(baselineErrorRate * 100).toFixed(1)}%`);
+      }
+
+      process.exit(drifted ? 1 : 0);
+    } catch (error) {
+      console.error(chalk.red('[GAgent] Drift detection failed:'), error);
       process.exit(1);
     }
   });

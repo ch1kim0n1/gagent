@@ -8,6 +8,15 @@ import {
 import { ToolRegistry } from '../tools/registry.js';
 import { GAgentConfig } from '../config/manager.js';
 import { Pipeline } from '../pipeline/orchestrator.js';
+import {
+  GBrainClient,
+  GBrainClientConfig,
+  GBrainClientError,
+} from '../../../shared/src/core/gbrain-client.js';
+import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
+import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
+
+const logger = new StructuredLogger('gagent-mcp-server');
 
 export async function startMcpServer(
   registry: ToolRegistry,
@@ -15,6 +24,21 @@ export async function startMcpServer(
   port?: string
 ): Promise<void> {
   const pipeline = new Pipeline(registry, config);
+  
+  const gbrainEndpoint = process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
+  const gbrainClient = new GBrainClient({
+    baseUrl: gbrainEndpoint,
+    timeoutMs: 30000,
+    maxRetries: 3,
+  });
+
+  // Initialize authentication middleware
+  const authSecret = process.env.GAGENT_AUTH_SECRET || 'dev-secret-key';
+  const authMiddleware = createAuthMiddleware({
+    secret: authSecret,
+    tool: 'gagent',
+    defaultRoles: ['read', 'write'],
+  });
 
   const server = new Server(
     {
@@ -120,21 +144,73 @@ export async function startMcpServer(
       },
     },
     {
-      name: 'gagent_config_set',
-      description: 'Set GAgent configuration value',
+      name: 'gagent_get_receipts',
+      description: 'Get execution receipts from the receipt registry',
       inputSchema: {
         type: 'object',
         properties: {
-          key: {
-            type: 'string',
-            description: 'Configuration key (dot notation)',
+          limit: {
+            type: 'number',
+            description: 'Maximum number of receipts to return',
           },
-          value: {
-            type: 'any',
-            description: 'Value to set',
+          offset: {
+            type: 'number',
+            description: 'Offset for pagination',
+          },
+          startDate: {
+            type: 'string',
+            description: 'Start date for filtering (ISO 8601)',
+          },
+          endDate: {
+            type: 'string',
+            description: 'End date for filtering (ISO 8601)',
           },
         },
-        required: ['key', 'value'],
+      },
+    },
+    {
+      name: 'gagent_get_drift',
+      description: 'Get drift statistics for metrics',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          metricName: {
+            type: 'string',
+            description: 'Specific metric name to check (optional)',
+          },
+        },
+      },
+    },
+    {
+      name: 'gagent_get_cost_stats',
+      description: 'Get cost statistics from the cost ledger',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'gagent_models',
+      description: 'List available models in the registry',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'gagent_tier',
+      description: 'Get tier configuration',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'gagent_registry',
+      description: 'Get tool registry information',
+      inputSchema: {
+        type: 'object',
+        properties: {},
       },
     },
   ];
@@ -145,6 +221,25 @@ export async function startMcpServer(
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
+
+    // Authentication check (for MVP, this is a no-op since stdio servers authenticate at process level)
+    // In production with HTTP transport, this would validate the Authorization header
+    const authHeaderRaw = request.params._meta?.authorization;
+      const authHeader = typeof authHeaderRaw === "string" ? authHeaderRaw : "";
+    if (authHeader) {
+      const auth = authMiddleware.authenticate(authHeader);
+      if (!auth.success) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Authentication failed: ${auth.error}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
 
     try {
       switch (name) {
@@ -193,19 +288,27 @@ export async function startMcpServer(
             };
           }
 
-          const { promisify } = await import('util');
-          const { exec } = await import('child_process');
-          const execAsync = promisify(exec);
-
-          const { stdout } = await execAsync(`gbrain query "${args.query}" --json`);
-          return {
-            content: [
-              {
-                type: 'text',
-                text: stdout,
-              },
-            ],
-          };
+          try {
+            const response = await gbrainClient.restClient.searchPages(args.query as string);
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(response, null, 2),
+                },
+              ],
+            };
+          } catch (error) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `GBrain search failed: ${error instanceof Error ? error.message : String(error)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
         }
 
         case 'gagent_stack_review': {
@@ -257,6 +360,78 @@ export async function startMcpServer(
           };
         }
 
+        case 'gagent_get_receipts': {
+          const receipts = await pipeline.getReceipts(args as any);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(receipts, null, 2),
+              },
+            ],
+          };
+        }
+
+        case 'gagent_get_drift': {
+          const drift = await pipeline.getDrift(args.metricName as string);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(drift, null, 2),
+              },
+            ],
+          };
+        }
+
+        case 'gagent_get_cost_stats': {
+          const stats = pipeline.getCostStats();
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(stats, null, 2),
+              },
+            ],
+          };
+        }
+
+        case 'gagent_models': {
+          const models = pipeline.getModels();
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(models, null, 2),
+              },
+            ],
+          };
+        }
+
+        case 'gagent_tier': {
+          const tier = pipeline.getTierConfig();
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(tier, null, 2),
+              },
+            ],
+          };
+        }
+
+        case 'gagent_registry': {
+          const registry = pipeline.getRegistryInfo();
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(registry, null, 2),
+              },
+            ],
+          };
+        }
+
         default:
           return {
             content: [
@@ -283,13 +458,13 @@ export async function startMcpServer(
 
   if (port) {
     // HTTP server mode
-    console.log(`Starting HTTP MCP server on port ${port}...`);
+    logger.info(`Starting HTTP MCP server on port ${port}`);
     // HTTP transport would be implemented here
     throw new Error('HTTP mode not yet implemented');
   } else {
     // Stdio server mode (for Claude Code)
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.log('GAgent MCP server running on stdio');
+    logger.info('GAgent MCP server running on stdio');
   }
 }

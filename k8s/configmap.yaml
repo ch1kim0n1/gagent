@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gagent-config
+  labels:
+    app: gagent
+    component: gstack
+data:
+  log-level: "info"
+  model-registry-enabled: "true"
+  tier-selection: "auto"

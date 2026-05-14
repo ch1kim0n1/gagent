@@ -11,7 +11,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
-import { createLogger, LogLevel } from '../../shared/src/core/structured-logger.js';
+import { createLogger, LogLevel } from '../../../shared/src/core/structured-logger.js';
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -64,20 +64,6 @@ export interface LLMClientConfig {
   enableModelFallback?: boolean;
   /** Hook called after each LLM call with cost info (for BudgetLedger integration) */
   onSpend?: (modelId: string, inputTokens: number, outputTokens: number, costUsd: number) => Promise<void>;
-}
-  maxRetries?: number;
-  /** Base delay for exponential backoff in milliseconds */
-  retryBaseDelayMs?: number;
-  /** API key rotation strategy */
-  keyRotationStrategy?: 'round-robin' | 'random' | 'usage-based';
-  /** Hook called when a key fails (for external key management) */
-  onKeyFailure?: (provider: 'anthropic' | 'openai', key: string, error: any) => void;
-  /** Hook called to get a fresh key (for external key management) */
-  onGetFreshKey?: (provider: 'anthropic' | 'openai') => string | null;
-  /** Fallback models to try if primary model fails */
-  modelFallbackChain?: string[];
-  /** Enable model fallback */
-  enableModelFallback?: boolean;
 }
 
 /** Anthropic model pricing (as of 2026-05-01) */
@@ -174,7 +160,7 @@ export class LLMClient {
   private keyUsageCount: Map<string, number> = new Map();
   private currentAnthropicKey: string | null = null;
   private currentOpenAIKey: string | null = null;
-  private logger = createLogger('gagent', { minLevel: 'debug' });
+  private logger = createLogger('gagent', { minLevel: LogLevel.DEBUG });
 
   constructor(config: LLMClientConfig = {}) {
     this.config = {
@@ -515,7 +501,7 @@ export class LLMClient {
     temperature: number
   ): AsyncGenerator<LLMStreamChunk> {
     const stream = await this.retryWithBackoff(
-      () =>
+      async () =>
         this.anthropicClient!.messages.stream({
           model: model as any,
           max_tokens: maxTokens,
@@ -526,7 +512,7 @@ export class LLMClient {
       { provider: 'anthropic' }
     );
 
-    for await (const chunk of stream) {
+    for await (const chunk of stream as any) {
       if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
         yield {
           content: chunk.delta.text,
