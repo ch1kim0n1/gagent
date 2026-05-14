@@ -5,3 +5,21 @@ coverage/
 .env
 .DS_Store
 *.log
+
+# Runtime data — never commit
+node_modules/
+*.db
+*.sqlite
+.gbrain-corpus/
+.gmirror/
+.gorchestrator/
+.gagent/
+.glearn/
+.gtom/
+
+# Local receipts produced by running the tool (not test baselines)
+receipts-*.jsonl
+
+# Build output
+dist/
+*.js.map
