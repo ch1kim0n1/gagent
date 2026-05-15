@@ -6,6 +6,7 @@
 export interface EngineConfig {
   type: 'postgres' | 'sqlite' | 'memory';
   connectionString?: string;
+  readConnectionString?: string;
   dbPath?: string;
   maxConnections?: number;
 }

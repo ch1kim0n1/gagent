@@ -328,6 +328,13 @@ export class Pipeline {
       consensus_agreement_rate: 0,
       budget_remaining_usd: this.multiModelConfig.cost_budget_usd_per_hour,
     };
+    const persistedEscalationMetrics = this.persistenceManager.loadEscalationMetrics<EscalationMetrics>();
+    if (persistedEscalationMetrics) {
+      this.escalationMetrics = {
+        ...this.escalationMetrics,
+        ...persistedEscalationMetrics,
+      };
+    }
   }
 
   describe(options: PipelineOptions): string {
@@ -508,12 +515,15 @@ export class Pipeline {
       const costUsd = receipt.cost_usd || 0;
       const exitCode = receipt.verdict === 'pass' ? 0 : 1;
       const output = winner?.output || '';
-      this.persistenceManager.addAgentRun({
-        run_id: runId,
-        task: options.task,
-        output: output,
-        exit_code: exitCode,
-        cost_usd: costUsd,
+      this.persistenceManager.transaction(() => {
+        this.persistenceManager.addAgentRun({
+          run_id: runId,
+          task: options.task,
+          output: output,
+          exit_code: exitCode,
+          cost_usd: costUsd,
+        });
+        this.persistenceManager.saveEscalationMetrics(this.escalationMetrics);
       });
 
       this.latencyTracker.record(performance.now() - start);
@@ -525,6 +535,7 @@ export class Pipeline {
 
     } catch (error) {
       this.latencyTracker.record(performance.now() - start);
+      this.persistenceManager.saveEscalationMetrics(this.escalationMetrics);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error)
@@ -560,6 +571,30 @@ export class Pipeline {
           scope: 'pipeline',
           resolver: operation,
         },
+      });
+      this.persistenceManager.transaction(() => {
+        this.persistenceManager.addLlmCall({
+          id: reservation.id,
+          model_id: result.model_id,
+          input_tokens: result.input_tokens,
+          output_tokens: result.output_tokens,
+          cost_usd: result.cost_usd,
+          operation,
+          metadata: {
+            scope: 'pipeline',
+            resolver: operation,
+          },
+        });
+        this.persistenceManager.addCostEntry({
+          id: reservation.id,
+          operation,
+          model_id: result.model_id,
+          cost_usd: result.cost_usd,
+          metadata: {
+            scope: 'pipeline',
+            resolver: operation,
+          },
+        });
       });
       return result;
     } catch (error) {

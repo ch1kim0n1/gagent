@@ -3,6 +3,7 @@
  */
 
 import { BrainEngine, EngineConfig } from './engine.js';
+import { PostgreSQLEngine } from './postgres-engine.js';
 import { SQLiteEngine } from './sqlite-engine.js';
 
 export function createEngine(config: EngineConfig): BrainEngine {
@@ -11,7 +12,7 @@ export function createEngine(config: EngineConfig): BrainEngine {
     case 'memory':
       return new SQLiteEngine(config);
     case 'postgres':
-      throw new Error('PostgreSQL engine not yet implemented');
+      return new PostgreSQLEngine(config);
     default:
       throw new Error(`Unknown engine type: ${config.type}`);
   }

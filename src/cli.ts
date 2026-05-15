@@ -6,6 +6,7 @@ import { GAgentConfig } from './config/manager.js';
 import { ToolRegistry } from './tools/registry.js';
 import { Pipeline } from './pipeline/orchestrator.js';
 import { startMcpServer } from './mcp/server.js';
+import { GAgentPersistenceManager } from './core/gagent-persistence.js';
 
 const config = new GAgentConfig();
 const registry = new ToolRegistry(config);
@@ -99,6 +100,64 @@ program
       const percentage = Math.round((score / maxScore) * 100);
       const color = percentage > 80 ? 'green' : percentage > 50 ? 'yellow' : 'red';
       console.log(`Overall health: ${chalk[color](percentage)}%`);
+    }
+  });
+
+program
+  .command('backup [destination]')
+  .description('Backup GAgent SQLite state')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (destination, options) => {
+    const persistence = new GAgentPersistenceManager();
+    try {
+      const backupPath = persistence.backup(destination);
+      if (options.json) {
+        console.log(JSON.stringify({ backup_path: backupPath }, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.green(`Backup written: ${backupPath}`));
+      }
+    } finally {
+      persistence.close();
+    }
+  });
+
+program
+  .command('restore <backup>')
+  .description('Restore GAgent SQLite state from backup')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (backup, options) => {
+    const persistence = new GAgentPersistenceManager();
+    try {
+      persistence.restore(backup);
+      if (options.json) {
+        console.log(JSON.stringify({ restored_from: backup }, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.green(`Restored from: ${backup}`));
+      }
+    } finally {
+      persistence.close();
+    }
+  });
+
+program
+  .command('export')
+  .description('Export persisted GAgent state')
+  .option('--format <format>', 'Export format: json', 'json')
+  .option('--json', 'Alias for --format json')
+  .action(async (options) => {
+    const format = options.json ? 'json' : String(options.format || 'json').toLowerCase();
+    if (format !== 'json') {
+      console.error(chalk.red(`Unsupported export format: ${format}`));
+      process.exit(1);
+    }
+
+    const persistence = new GAgentPersistenceManager();
+    try {
+      console.log(JSON.stringify(persistence.exportJson(), null, 2));
+    } finally {
+      persistence.close();
     }
   });
 
@@ -1040,6 +1099,9 @@ function buildCompletionScript(shell: string): string | null {
   const commands = [
     'init',
     'health',
+    'backup',
+    'restore',
+    'export',
     'run',
     'sync',
     'config',
@@ -1071,6 +1133,7 @@ function buildCompletionScript(shell: string): string | null {
     '--help',
     '--version',
     '--json',
+    '--format',
     '--quiet',
     '--cycles',
     '--budget-usd',
