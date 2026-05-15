@@ -11,6 +11,7 @@ import {
   MultiModelConfig,
   EscalationMetrics,
   TierConfig,
+  ModelTier,
 } from '../types/index.js';
 import {
   LLMClient,
@@ -183,6 +184,41 @@ interface PipelineResult {
   error?: string;
 }
 
+interface ConsensusVote {
+  tier: ModelTier;
+  model_id: string;
+  winnerIndex?: number;
+  confidence?: number;
+  dimensions: Record<string, number>;
+  reasoning?: string;
+  disqualified: boolean;
+  disqualification_reason?: string;
+}
+
+interface DimensionAgreement {
+  participating_models: number;
+  agreement: number;
+  wilson_95_ci: { lower: number; upper: number };
+  small_sample_note: boolean;
+  values: Record<string, number>;
+}
+
+interface ConsensusSummary {
+  winnerIndex?: number;
+  agreed: boolean;
+  agreement_ratio: number;
+  consensus_threshold: number;
+  votes_required: number;
+  valid_votes: number;
+  tier3_invoked: boolean;
+  early_stopped: boolean;
+  small_sample_note: boolean;
+  per_dimension_agreement: Record<string, DimensionAgreement>;
+  votes: ConsensusVote[];
+}
+
+const CONSENSUS_DIMENSIONS = ['correctness', 'completeness', 'reliability', 'safety'];
+
 export class Pipeline {
   private registry: ToolRegistry;
   private config: GAgentConfig;
@@ -208,6 +244,7 @@ export class Pipeline {
   private gmirrorEndpoint: string;
   private gtomEndpoint: string;
   private glearnEndpoint: string;
+  private lastConsensusSummary?: ConsensusSummary;
 
   constructor(registry: ToolRegistry, config: GAgentConfig, multiModelConfig?: MultiModelConfig, llmConfig?: LLMClientConfig, gbrainConfig?: GBrainClientConfig) {
     this.registry = registry;
@@ -739,6 +776,7 @@ Return a JSON object with the decision, e.g.:
       return attempts[winnerIndex];
     } catch (error) {
       logger.warn('LLM winner selection failed, using score-based fallback', { error: String(error) });
+      this.lastConsensusSummary = undefined;
       return this.selectWinnerByScore(attempts, options);
     }
   }
@@ -768,20 +806,235 @@ Return a JSON object with the decision, e.g.:
   }
 
   /**
-   * Judge winner using LLM
+   * Judge winner using multi-model consensus.
    */
   private async judgeWinnerWithLLM(attempts: AttemptResult[], options: PipelineOptions): Promise<number> {
     const prompt = this.buildWinnerJudgmentPrompt(attempts, options);
-    const model = this.llmClient.getModelByTier('tier1');
+    const votes: ConsensusVote[] = [];
+    let tier3Invoked = false;
+    let earlyStopped = false;
 
-    const llmResult = await this.callBudgetedLLM('winner_judgment', prompt, { model, temperature: 0.3 });
+    for (const tier of ['tier1', 'tier2'] as ModelTier[]) {
+      votes.push(await this.collectConsensusVote(tier, prompt, attempts.length));
+    }
+
+    let consensus = this.evaluateConsensus(votes, attempts.length, false, false);
+    if (consensus.agreed && consensus.winnerIndex !== undefined) {
+      earlyStopped = true;
+    } else if (this.multiModelConfig.allow_tier3) {
+      tier3Invoked = true;
+      this.escalationMetrics.tier3_count++;
+      logger.info('Invoking Tier 3 model for winner consensus', {
+        reason: 'tier1_tier2_consensus_failed',
+        consensus_threshold: this.multiModelConfig.consensus_threshold,
+      });
+      votes.push(await this.collectConsensusVote('tier3', prompt, attempts.length));
+    }
+
+    consensus = this.evaluateConsensus(votes, attempts.length, tier3Invoked, earlyStopped);
+    this.lastConsensusSummary = consensus;
+    this.escalationMetrics.consensus_agreement_rate = this.updateAverage(
+      this.escalationMetrics.consensus_agreement_rate,
+      Math.max(1, this.escalationMetrics.total_tasks),
+      consensus.agreement_ratio
+    );
+
+    if (!consensus.agreed || consensus.winnerIndex === undefined) {
+      throw new Error('Winner consensus failed');
+    }
+
+    return consensus.winnerIndex;
+  }
+
+  private async collectConsensusVote(
+    tier: ModelTier,
+    prompt: string,
+    attemptCount: number,
+  ): Promise<ConsensusVote> {
+    const model = this.llmClient.getModelByTier(tier);
 
     try {
-      const parsed = JSON.parse(llmResult.content);
-      return parsed.winnerIndex || 0;
-    } catch {
-      return 0;
+      const llmResult = await this.callBudgetedLLM(`winner_judgment_${tier}`, prompt, {
+        model,
+        temperature: 0.2,
+      });
+      const parsed = this.parseJsonObject(llmResult.content);
+      return this.normalizeConsensusVote(tier, llmResult.model_id || model, parsed, attemptCount);
+    } catch (error) {
+      return {
+        tier,
+        model_id: model,
+        dimensions: {},
+        disqualified: true,
+        disqualification_reason: error instanceof Error ? error.message : String(error),
+      };
     }
+  }
+
+  private normalizeConsensusVote(
+    tier: ModelTier,
+    modelId: string,
+    parsed: any,
+    attemptCount: number,
+  ): ConsensusVote {
+    const dimensions = this.normalizeDimensions(parsed?.dimensions);
+    const winnerIndex = Number(parsed?.winnerIndex);
+    const confidence = this.clamp01(Number(parsed?.confidence ?? 0));
+    const missingDimensions = CONSENSUS_DIMENSIONS.filter(dim => dimensions[dim] === undefined);
+    const disqualificationReasons: string[] = [];
+
+    if (!Number.isInteger(winnerIndex) || winnerIndex < 0 || winnerIndex >= attemptCount) {
+      disqualificationReasons.push('winnerIndex is missing or out of range');
+    }
+    if (missingDimensions.length > 0) {
+      disqualificationReasons.push(`missing dimensions: ${missingDimensions.join(', ')}`);
+    }
+
+    return {
+      tier,
+      model_id: modelId,
+      winnerIndex: Number.isInteger(winnerIndex) ? winnerIndex : undefined,
+      confidence,
+      dimensions,
+      reasoning: typeof parsed?.reasoning === 'string' ? parsed.reasoning : undefined,
+      disqualified: disqualificationReasons.length > 0,
+      disqualification_reason: disqualificationReasons.join('; ') || undefined,
+    };
+  }
+
+  private normalizeDimensions(value: any): Record<string, number> {
+    const dimensions: Record<string, number> = {};
+    if (!value || typeof value !== 'object') {
+      return dimensions;
+    }
+
+    for (const dimension of CONSENSUS_DIMENSIONS) {
+      const raw = Number(value[dimension]);
+      if (Number.isFinite(raw)) {
+        dimensions[dimension] = this.clamp01(raw);
+      }
+    }
+
+    return dimensions;
+  }
+
+  private parseJsonObject(content: string): any {
+    try {
+      return JSON.parse(content);
+    } catch {
+      const match = content.match(/\{[\s\S]*\}/);
+      if (!match) {
+        throw new Error('LLM response did not contain JSON');
+      }
+      return JSON.parse(match[0]);
+    }
+  }
+
+  private evaluateConsensus(
+    votes: ConsensusVote[],
+    attemptCount: number,
+    tier3Invoked: boolean,
+    earlyStopped: boolean,
+  ): ConsensusSummary {
+    const validVotes = votes.filter(v => !v.disqualified && v.winnerIndex !== undefined);
+    const counts = new Map<number, number>();
+    for (const vote of validVotes) {
+      counts.set(vote.winnerIndex!, (counts.get(vote.winnerIndex!) || 0) + 1);
+    }
+
+    let winnerIndex: number | undefined;
+    let winningVotes = 0;
+    for (const [index, count] of counts.entries()) {
+      if (count > winningVotes) {
+        winnerIndex = index;
+        winningVotes = count;
+      }
+    }
+
+    const agreementRatio = validVotes.length > 0 ? winningVotes / validVotes.length : 0;
+    const threshold = this.multiModelConfig.consensus_threshold;
+    const votesRequired = validVotes.length >= 3
+      ? Math.max(2, Math.ceil(validVotes.length * Math.min(threshold, 2 / 3)))
+      : 2;
+    const agreed = winningVotes >= votesRequired && winnerIndex !== undefined;
+
+    return {
+      winnerIndex,
+      agreed,
+      agreement_ratio: agreementRatio,
+      consensus_threshold: threshold,
+      votes_required: votesRequired,
+      valid_votes: validVotes.length,
+      tier3_invoked: tier3Invoked,
+      early_stopped: earlyStopped,
+      small_sample_note: attemptCount < 30,
+      per_dimension_agreement: this.calculateDimensionAgreement(validVotes),
+      votes,
+    };
+  }
+
+  private calculateDimensionAgreement(votes: ConsensusVote[]): Record<string, DimensionAgreement> {
+    const agreements: Record<string, DimensionAgreement> = {};
+    const tolerance = 1 - this.multiModelConfig.consensus_threshold;
+
+    for (const dimension of CONSENSUS_DIMENSIONS) {
+      const valuesByModel: Record<string, number> = {};
+      const values: number[] = [];
+      for (const vote of votes) {
+        const value = vote.dimensions[dimension];
+        if (value !== undefined) {
+          valuesByModel[vote.model_id] = value;
+          values.push(value);
+        }
+      }
+
+      if (values.length === 0) {
+        agreements[dimension] = {
+          participating_models: 0,
+          agreement: 0,
+          wilson_95_ci: this.wilson95(0, 0),
+          small_sample_note: true,
+          values: valuesByModel,
+        };
+        continue;
+      }
+
+      const sorted = [...values].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      const agreeing = values.filter(value => Math.abs(value - median) <= tolerance).length;
+
+      agreements[dimension] = {
+        participating_models: values.length,
+        agreement: agreeing / values.length,
+        wilson_95_ci: this.wilson95(agreeing, values.length),
+        small_sample_note: values.length < 30,
+        values: valuesByModel,
+      };
+    }
+
+    return agreements;
+  }
+
+  private wilson95(successes: number, total: number): { lower: number; upper: number } {
+    if (total <= 0) {
+      return { lower: 0, upper: 0 };
+    }
+
+    const z = 1.96;
+    const phat = successes / total;
+    const denominator = 1 + (z * z) / total;
+    const center = phat + (z * z) / (2 * total);
+    const margin = z * Math.sqrt((phat * (1 - phat) + (z * z) / (4 * total)) / total);
+
+    return {
+      lower: this.clamp01((center - margin) / denominator),
+      upper: this.clamp01((center + margin) / denominator),
+    };
+  }
+
+  private clamp01(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.min(1, Math.max(0, value));
   }
 
   /**
@@ -800,12 +1053,18 @@ Return a JSON object with the decision, e.g.:
       return desc;
     }).join('\n');
 
-    return `Select the best attempt from the following options based on quality, correctness, and reliability:
+    return `Select the best attempt from the following options based on quality, correctness, reliability, and safety.
+You are one voter in a multi-model consensus. Return strict JSON only.
+The dimensions object is required. Use scores from 0 to 1 for:
+- correctness
+- completeness
+- reliability
+- safety
 
 ${attemptsDescription}
 
-Return a JSON object with the index of the winner:
-{"winnerIndex": <0 to ${attempts.length - 1}>}`;
+Return this JSON shape:
+{"winnerIndex": <0 to ${attempts.length - 1}>, "confidence": <0 to 1>, "dimensions": {"correctness": <0 to 1>, "completeness": <0 to 1>, "reliability": <0 to 1>, "safety": <0 to 1>}, "reasoning": "brief reason"}`;
   }
 
   private async recordToBrain(task: string, winner: AttemptResult, attempts: AttemptResult[]): Promise<void> {
@@ -872,6 +1131,11 @@ Return a JSON object with the index of the winner:
     
     const overallScore = winner ? this.computeScore(winner, options) : 0;
     const passed = overallScore > 0.5;
+    const passCount = attempts.filter(attempt => this.computeScore(attempt, options) > 0.5).length;
+    const scoreInterval = this.wilson95(passCount, attempts.length);
+    const consensusModels = this.lastConsensusSummary?.votes.map(vote => vote.model_id) || [];
+    const modelList = consensusModels.length > 0 ? Array.from(new Set(consensusModels)) : ['claude-sonnet-4-6'];
+    const consensusConfidence = this.lastConsensusSummary?.agreement_ratio ?? 0.7;
 
     return {
       receipt_id: uuidv4(),
@@ -881,11 +1145,11 @@ Return a JSON object with the index of the winner:
       rubric_name: 'gagent_v1',
       rubric_sha8: inputHash.substring(0, 8),
       input_hash: inputHash,
-      models_used: ['claude-sonnet-4-6'],
+      models_used: modelList,
       config_hash: configHash,
       verdict: passed ? 'pass' : 'fail',
       scores: {
-        overall_score: { score: overallScore, confidence: 0.7, weight: 1.0 },
+        overall_score: { score: overallScore, confidence: consensusConfidence, weight: 1.0 },
       },
       overall_score: overallScore,
       hard_gates_passed: passed,
@@ -898,6 +1162,9 @@ Return a JSON object with the index of the winner:
         cognitive_check: options.cognitiveCheck,
         attempts_count: attempts.length,
         winner_id: winner?.id,
+        consensus: this.lastConsensusSummary,
+        score_wilson_95_ci: scoreInterval,
+        small_sample_note: attempts.length < 30,
         llm_total_cost_usd: this.llmClient.getTotalCostUsd(),
         budget_status: this.budgetLedger.getStatus(),
       },
