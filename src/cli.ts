@@ -821,59 +821,51 @@ program
 program
   .command('drift')
   .description('Detect if agent behavior has drifted from baseline')
-  .option('--window <n>', 'Number of recent runs to check', '10')
-  .option('--baseline-error-rate <rate>', 'Expected baseline error rate', '0.1')
+  .option('--window <duration>', 'Current analysis window, e.g. 7d, 24h, 30m', '7d')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
-      const windowSize = parseInt(options.window);
-      if (isNaN(windowSize) || windowSize < 1) {
-        console.error(chalk.red('[GAgent] --window must be a positive integer'));
-        process.exit(1);
-      }
-
-      const baselineErrorRate = parseFloat(options.baselineErrorRate);
-      if (isNaN(baselineErrorRate) || baselineErrorRate < 0 || baselineErrorRate > 1) {
-        console.error(chalk.red('[GAgent] --baseline-error-rate must be a number between 0 and 1'));
-        process.exit(1);
-      }
-
       const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+      const { analyzeCohortDrift, executionReceiptToCohortSnapshot, parseWindowDuration } = await import('./core/drift-analysis.js');
+      const windowMs = parseWindowDuration(options.window);
       const registry = new ReceiptRegistry('gagent');
 
       const now = new Date();
-      const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-      const allReceipts = await registry.getAllBetween(start, now);
-
-      // Take the last N receipts
-      const recent = allReceipts.slice(-windowSize);
-      const total = recent.length;
-      const errors = recent.filter((r: any) => r.exit_code !== 0).length;
-      const errorRate = total === 0 ? 0 : errors / total;
-
-      const DRIFT_THRESHOLD = 0.1;
-      const drifted = Math.abs(errorRate - baselineErrorRate) > DRIFT_THRESHOLD;
+      const start = new Date(now.getTime() - windowMs * 2);
+      const receipts = await registry.getAllBetween(start, now);
+      const snapshots = receipts.map(executionReceiptToCohortSnapshot);
+      const driftResults = analyzeCohortDrift(snapshots, { windowMs, now, seed: 'gagent-drift' });
+      const alerts = driftResults.filter(result =>
+        result.anomalies.length > 0 || result.frustration_wilson_95_ci.degraded,
+      );
 
       const result = {
-        drifted,
-        error_rate: errorRate,
-        baseline_error_rate: baselineErrorRate,
+        drifted: alerts.length > 0,
+        window: options.window,
+        cohorts: driftResults,
+        drift_results: driftResults,
+        alerts,
       };
 
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (!options.quiet) {
         console.log(chalk.blue('[GAgent] Drift Detection'));
-        const driftColor = drifted ? 'red' : 'green';
-        const driftLabel = drifted ? '⚠ DRIFT DETECTED' : '✓ No drift';
+        const driftColor = alerts.length > 0 ? 'red' : 'green';
+        const driftLabel = alerts.length > 0 ? 'DRIFT DETECTED' : 'No drift';
         console.log(`  Status: ${chalk[driftColor](driftLabel)}`);
-        console.log(`  Runs checked: ${total}`);
-        console.log(`  Current error rate: ${(errorRate * 100).toFixed(1)}%`);
-        console.log(`  Baseline error rate: ${(baselineErrorRate * 100).toFixed(1)}%`);
+        console.log(`  Window: ${options.window}`);
+        console.log(`  Receipts checked: ${receipts.length}`);
+        console.log(`  Cohorts tracked: ${driftResults.length}`);
+        for (const cohort of driftResults) {
+          const status = cohort.anomalies.length > 0 || cohort.frustration_wilson_95_ci.degraded ? chalk.red('ALERT') : chalk.green('OK');
+          const escalation = cohort.anomalies.filter((anomaly: any) => anomaly.metric === 'escalation_rate').length;
+          console.log(`  ${status} ${cohort.cohort}: samples=${cohort.sample_size} anomalies=${cohort.anomalies.length} escalation_alerts=${escalation}`);
+        }
       }
 
-      process.exit(drifted ? 1 : 0);
+      process.exit(alerts.length > 0 ? 1 : 0);
     } catch (error) {
       console.error(chalk.red('[GAgent] Drift detection failed:'), error);
       process.exit(1);
