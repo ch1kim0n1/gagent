@@ -19,6 +19,9 @@ describe('GAgent MCP Server', () => {
       'gagent_stack_review',
       'gagent_config_get',
       'gagent_config_set',
+      'gagent_get_receipts',
+      'gagent_get_models',
+      'gagent_get_tier_metrics',
     ]) {
       expect(serverSource).toContain(tool);
     }
@@ -27,5 +30,12 @@ describe('GAgent MCP Server', () => {
   it('declares required schemas for state-changing tools', () => {
     expect(serverSource).toContain("required: ['task']");
     expect(serverSource).toContain("required: ['key']");
+  });
+
+  it('enforces token auth, read/write scopes, and rate limits for MCP calls', () => {
+    expect(serverSource).toContain('requiredScopeForTool');
+    expect(serverSource).toContain('Insufficient permissions: requires');
+    expect(serverSource).toContain('Rate limit exceeded');
+    expect(serverSource).toContain('GAGENT_MCP_TOKEN');
   });
 });

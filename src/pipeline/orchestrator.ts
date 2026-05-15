@@ -1528,6 +1528,18 @@ Return this JSON shape:
   }
 
   /**
+   * Get tier runtime metrics for MCP and CLI parity.
+   */
+  getTierMetrics() {
+    return {
+      config: this.multiModelConfig,
+      models: this.getModels(),
+      escalation_metrics: this.escalationMetrics,
+      cost_stats: this.getCostStats(),
+    };
+  }
+
+  /**
    * Get registry information
    */
   getRegistryInfo() {

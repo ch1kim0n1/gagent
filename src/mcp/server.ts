@@ -18,6 +18,15 @@ import { StructuredLogger } from '../../../shared/src/observability/structured-l
 
 const logger = new StructuredLogger('gagent-mcp-server');
 
+type McpScope = 'read' | 'write';
+
+interface RateWindow {
+  minuteCount: number;
+  minuteStart: number;
+  hourCount: number;
+  hourStart: number;
+}
+
 export async function startMcpServer(
   registry: ToolRegistry,
   config: GAgentConfig,
@@ -37,8 +46,15 @@ export async function startMcpServer(
   const authMiddleware = createAuthMiddleware({
     secret: authSecret,
     tool: 'gagent',
-    defaultRoles: ['read', 'write'],
+    defaultRoles: parseScopes(process.env.GAGENT_MCP_DEFAULT_SCOPES || 'read,write'),
   });
+  const requireAuth = process.env.GAGENT_REQUIRE_AUTH === 'true';
+  const allowAnonymousRead = process.env.GAGENT_ALLOW_ANONYMOUS_READ !== 'false';
+  const bootstrapToken = process.env.GAGENT_MCP_TOKEN;
+  const bootstrapScopes = parseScopes(process.env.GAGENT_MCP_TOKEN_SCOPES || 'read,write');
+  const rateLimitRpm = parseLimit(process.env.GAGENT_RATE_LIMIT_RPM, 60);
+  const rateLimitRph = parseLimit(process.env.GAGENT_RATE_LIMIT_RPH, 1000);
+  const rateWindows = new Map<string, RateWindow>();
 
   const server = new Server(
     {
@@ -144,6 +160,23 @@ export async function startMcpServer(
       },
     },
     {
+      name: 'gagent_config_set',
+      description: 'Set GAgent configuration value',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            description: 'Configuration key (dot notation)',
+          },
+          value: {
+            description: 'Configuration value',
+          },
+        },
+        required: ['key', 'value'],
+      },
+    },
+    {
       name: 'gagent_get_receipts',
       description: 'Get execution receipts from the receipt registry',
       inputSchema: {
@@ -198,8 +231,24 @@ export async function startMcpServer(
       },
     },
     {
+      name: 'gagent_get_models',
+      description: 'List available models in the registry',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
       name: 'gagent_tier',
       description: 'Get tier configuration',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'gagent_get_tier_metrics',
+      description: 'Get tier configuration, model mapping, and escalation metrics',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -221,24 +270,15 @@ export async function startMcpServer(
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
+    const requiredScope = requiredScopeForTool(name);
+    const auth = authorize(request.params._meta, requiredScope);
+    if (!auth.ok) {
+      return errorResponse(auth.error);
+    }
 
-    // Authentication check (for MVP, this is a no-op since stdio servers authenticate at process level)
-    // In production with HTTP transport, this would validate the Authorization header
-    const authHeaderRaw = request.params._meta?.authorization;
-      const authHeader = typeof authHeaderRaw === "string" ? authHeaderRaw : "";
-    if (authHeader) {
-      const auth = authMiddleware.authenticate(authHeader);
-      if (!auth.success) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Authentication failed: ${auth.error}`,
-            },
-          ],
-          isError: true,
-        };
-      }
+    const rateLimit = checkRateLimit(auth.token);
+    if (!rateLimit.allowed) {
+      return errorResponse(`Rate limit exceeded. Reset at ${rateLimit.resetAt}`);
     }
 
     try {
@@ -407,6 +447,18 @@ export async function startMcpServer(
           };
         }
 
+        case 'gagent_get_models': {
+          const models = pipeline.getModels();
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(models, null, 2),
+              },
+            ],
+          };
+        }
+
         case 'gagent_tier': {
           const tier = pipeline.getTierConfig();
           return {
@@ -414,6 +466,18 @@ export async function startMcpServer(
               {
                 type: 'text',
                 text: JSON.stringify(tier, null, 2),
+              },
+            ],
+          };
+        }
+
+        case 'gagent_get_tier_metrics': {
+          const tierMetrics = pipeline.getTierMetrics();
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(tierMetrics, null, 2),
               },
             ],
           };
@@ -443,17 +507,87 @@ export async function startMcpServer(
           };
       }
     } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-        isError: true,
-      };
+      return errorResponse(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
+
+  function authorize(meta: Record<string, unknown> | undefined, requiredScope: McpScope) {
+    const authHeaderRaw = meta?.authorization;
+    const authHeader = typeof authHeaderRaw === 'string' ? authHeaderRaw : '';
+
+    if (!authHeader) {
+      if (!requireAuth && requiredScope === 'read' && allowAnonymousRead) {
+        return { ok: true as const, token: 'anonymous-read' };
+      }
+      return { ok: false as const, error: `Authentication failed: missing bearer token for ${requiredScope} scope` };
+    }
+
+    const auth = authMiddleware.authenticate(authHeader);
+    if (!auth.success) {
+      return { ok: false as const, error: `Authentication failed: ${auth.error}` };
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const scopes = scopesForToken(token, auth.token?.roles || []);
+    if (!scopes.includes(requiredScope)) {
+      return { ok: false as const, error: `Insufficient permissions: requires ${requiredScope} scope` };
+    }
+
+    return { ok: true as const, token };
+  }
+
+  function scopesForToken(token: string, fallbackRoles: string[]): McpScope[] {
+    if (bootstrapToken && token === bootstrapToken) {
+      return bootstrapScopes;
+    }
+    if (bootstrapToken) {
+      return [];
+    }
+    return parseScopes(fallbackRoles.join(','));
+  }
+
+  function requiredScopeForTool(name: string): McpScope {
+    const writeTools = new Set(['gagent_run', 'gagent_config_set']);
+    return writeTools.has(name) ? 'write' : 'read';
+  }
+
+  function checkRateLimit(token: string) {
+    const now = Date.now();
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * 60 * 1000;
+    let window = rateWindows.get(token);
+    if (!window) {
+      window = { minuteCount: 0, minuteStart: now, hourCount: 0, hourStart: now };
+      rateWindows.set(token, window);
+    }
+    if (now - window.minuteStart >= minuteMs) {
+      window.minuteStart = now;
+      window.minuteCount = 0;
+    }
+    if (now - window.hourStart >= hourMs) {
+      window.hourStart = now;
+      window.hourCount = 0;
+    }
+    if (window.minuteCount >= rateLimitRpm || window.hourCount >= rateLimitRph) {
+      const resetAt = new Date(Math.min(window.minuteStart + minuteMs, window.hourStart + hourMs)).toISOString();
+      return { allowed: false, resetAt };
+    }
+    window.minuteCount++;
+    window.hourCount++;
+    return { allowed: true, resetAt: new Date(window.minuteStart + minuteMs).toISOString() };
+  }
+
+  function errorResponse(text: string) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text,
+        },
+      ],
+      isError: true,
+    };
+  }
 
   if (port) {
     // HTTP server mode
@@ -466,4 +600,17 @@ export async function startMcpServer(
     await server.connect(transport);
     logger.info('GAgent MCP server running on stdio');
   }
+}
+
+function parseScopes(value: string): McpScope[] {
+  const scopes = value
+    .split(',')
+    .map(scope => scope.trim())
+    .filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
+  return scopes.length > 0 ? scopes : ['read'];
+}
+
+function parseLimit(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
