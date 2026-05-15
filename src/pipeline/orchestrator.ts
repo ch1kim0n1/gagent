@@ -1,4 +1,6 @@
 import * as crypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
 const uuidv4 = (): string => crypto.randomUUID();
 import { ToolRegistry } from '../tools/registry.js';
 import { GAgentConfig } from '../config/manager.js';
@@ -13,14 +15,15 @@ import {
 import {
   LLMClient,
   LLMClientConfig,
+  LLMCallResult,
 } from '../core/llm-client.js';
+import { BudgetLedger } from '../core/budget-ledger.js';
 import {
   GBrainClient,
   GBrainClientConfig,
   GBrainClientError,
 } from '../../../shared/src/core/gbrain-client.js';
 import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
-import { CostLedger } from '../../../shared/src/core/cost-ledger.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
 
@@ -195,7 +198,8 @@ export class Pipeline {
   private readonly CIRCUIT_BREAKER_THRESHOLD = 5;
   private readonly CIRCUIT_BREAKER_TIMEOUT_MS = 60000;
   private driftDetector: DriftDetector;
-  private costLedger: CostLedger;
+  private budgetLedger: BudgetLedger;
+  private budgetLedgerReady: Promise<void>;
   private latencyTracker: LatencyTracker;
   private auditLogger: LocalAuditLogger;
   private gbrainEndpoint: string;
@@ -210,7 +214,6 @@ export class Pipeline {
     this.config = config;
     this.receiptRegistry = new ReceiptRegistry('gagent');
     this.persistenceManager = new GAgentPersistenceManager();
-    this.llmClient = new LLMClient(llmConfig);
     
     this.gbrainEndpoint = process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
     this.gstackEndpoint = process.env.GSTACK_ENDPOINT || 'http://localhost:3001';
@@ -252,11 +255,20 @@ export class Pipeline {
       drift_threshold: 0.2,
       alert_threshold: 0.3,
     });
-    this.costLedger = new CostLedger({
-      budget_usd_per_hour: 20.0,
-      max_reserve_usd: 5.0,
-      auto_commit: false,
-      persistence_enabled: true,
+    this.budgetLedger = new BudgetLedger({
+      max_budget_usd: this.multiModelConfig.cost_budget_usd_per_hour,
+      default_ttl_ms: 5 * 60 * 1000,
+      scope_caps_usd: {
+        pipeline: this.multiModelConfig.cost_budget_usd_per_hour,
+      },
+    }, 'gagent');
+    this.budgetLedgerReady = this.budgetLedger.init().catch(error => {
+      logger.warn('Budget ledger initialization failed', { error: String(error) });
+    });
+    this.llmClient = new LLMClient({
+      ...llmConfig,
+      metricsPersistencePath: llmConfig?.metricsPersistencePath
+        || path.join(os.homedir(), '.gagent', 'audit', 'llm-metrics.json'),
     });
     this.latencyTracker = new LatencyTracker(1000);
     this.auditLogger = new LocalAuditLogger('gagent');
@@ -312,6 +324,7 @@ export class Pipeline {
   async execute(options: PipelineOptions): Promise<PipelineResult> {
     const start = performance.now();
     const tier1StartTime = Date.now();
+    const runStartCostUsd = this.llmClient.getTotalCostUsd();
     try {
       // Check budget before execution
       if (options.budgetUsd !== undefined && this.escalationMetrics.budget_remaining_usd < options.budgetUsd) {
@@ -446,7 +459,8 @@ export class Pipeline {
       }
 
       // Generate and emit receipt
-      const receipt = await this.generateReceipt(options, winner, attempts);
+      const runCostUsd = Math.max(0, this.llmClient.getTotalCostUsd() - runStartCostUsd);
+      const receipt = await this.generateReceipt(options, winner, attempts, runCostUsd);
       await this.receiptRegistry.append(receipt);
 
       // Store receipt in gbrain for quality control
@@ -484,11 +498,44 @@ export class Pipeline {
   /**
    * LLM-driven decision: Select execution strategy
    */
+  private async callBudgetedLLM(
+    operation: string,
+    prompt: string,
+    options: { model: string; temperature?: number; maxTokens?: number },
+  ): Promise<LLMCallResult> {
+    await this.budgetLedgerReady;
+    const reserveUsd = Number(process.env.GAGENT_LLM_CALL_RESERVE_USD || '0.05');
+    const ttlMs = Number(process.env.GAGENT_BUDGET_RESERVATION_TTL_MS || String(5 * 60 * 1000));
+    const reservation = this.budgetLedger.reserve(operation, reserveUsd, ttlMs, {
+      scope: 'pipeline',
+      resolver: operation,
+      model: options.model,
+    });
+
+    try {
+      const result = await this.llmClient.call(prompt, options);
+      await this.budgetLedger.commit(reservation.id, result.cost_usd, {
+        model_id: result.model_id,
+        input_tokens: result.input_tokens,
+        output_tokens: result.output_tokens,
+        operation,
+        metadata: {
+          scope: 'pipeline',
+          resolver: operation,
+        },
+      });
+      return result;
+    } catch (error) {
+      this.budgetLedger.release(reservation.id);
+      throw error;
+    }
+  }
+
   private async llmDecisionExecutionStrategy(task: string, context: any): Promise<{ parallel: number; tool: string }> {
     const prompt = this.buildExecutionStrategyPrompt(task, context);
     const model = this.llmClient.getModelByTier('tier1');
     
-    const llmResult = await this.llmClient.call(prompt, { model, temperature: 0.7 });
+    const llmResult = await this.callBudgetedLLM('execution_strategy', prompt, { model, temperature: 0.7 });
     
     try {
       const parsed = JSON.parse(llmResult.content);
@@ -521,7 +568,7 @@ Return a JSON object with the execution strategy, e.g.:
     const prompt = this.buildEscalationPrompt(errorRate, attempts);
     const model = this.llmClient.getModelByTier('tier1');
     
-    const llmResult = await this.llmClient.call(prompt, { model, temperature: 0.5 });
+    const llmResult = await this.callBudgetedLLM('escalation_decision', prompt, { model, temperature: 0.5 });
     
     try {
       const parsed = JSON.parse(llmResult.content);
@@ -551,7 +598,7 @@ Return a JSON object with the decision, e.g.:
     const prompt = this.buildVerifyPrompt(attempts);
     const model = this.llmClient.getModelByTier('tier1');
     
-    const llmResult = await this.llmClient.call(prompt, { model, temperature: 0.5 });
+    const llmResult = await this.callBudgetedLLM('verification_decision', prompt, { model, temperature: 0.5 });
     
     try {
       const parsed = JSON.parse(llmResult.content);
@@ -580,7 +627,7 @@ Return a JSON object with the decision, e.g.:
     const prompt = this.buildCognitiveCheckPrompt(attempts);
     const model = this.llmClient.getModelByTier('tier1');
     
-    const llmResult = await this.llmClient.call(prompt, { model, temperature: 0.5 });
+    const llmResult = await this.callBudgetedLLM('cognitive_check_decision', prompt, { model, temperature: 0.5 });
     
     try {
       const parsed = JSON.parse(llmResult.content);
@@ -727,7 +774,7 @@ Return a JSON object with the decision, e.g.:
     const prompt = this.buildWinnerJudgmentPrompt(attempts, options);
     const model = this.llmClient.getModelByTier('tier1');
 
-    const llmResult = await this.llmClient.call(prompt, { model, temperature: 0.3 });
+    const llmResult = await this.callBudgetedLLM('winner_judgment', prompt, { model, temperature: 0.3 });
 
     try {
       const parsed = JSON.parse(llmResult.content);
@@ -817,7 +864,8 @@ Return a JSON object with the index of the winner:
   private async generateReceipt(
     options: PipelineOptions,
     winner: AttemptResult | undefined,
-    attempts: AttemptResult[]
+    attempts: AttemptResult[],
+    costUsd: number = 0,
   ): Promise<ExecutionReceipt> {
     const inputHash = crypto.createHash('sha256').update(JSON.stringify(options)).digest('hex');
     const configHash = crypto.createHash('sha256').update(JSON.stringify(this.config)).digest('hex');
@@ -841,7 +889,7 @@ Return a JSON object with the index of the winner:
       },
       overall_score: overallScore,
       hard_gates_passed: passed,
-      cost_usd: 0,
+      cost_usd: costUsd,
       errors: [],
       metadata: {
         task: options.task,
@@ -850,6 +898,8 @@ Return a JSON object with the index of the winner:
         cognitive_check: options.cognitiveCheck,
         attempts_count: attempts.length,
         winner_id: winner?.id,
+        llm_total_cost_usd: this.llmClient.getTotalCostUsd(),
+        budget_status: this.budgetLedger.getStatus(),
       },
     };
   }
@@ -1190,7 +1240,7 @@ Return a JSON object with the index of the winner:
    * Get cost statistics
    */
   getCostStats() {
-    return this.costLedger.getStatistics();
+    return this.budgetLedger.getStats();
   }
 
   /**

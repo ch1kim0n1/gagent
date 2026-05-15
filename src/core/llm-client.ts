@@ -11,6 +11,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
+import * as fs from 'fs';
+import * as path from 'path';
 import { createLogger, LogLevel } from '../../../shared/src/core/structured-logger.js';
 
 export interface ModelPricing {
@@ -64,6 +66,8 @@ export interface LLMClientConfig {
   enableModelFallback?: boolean;
   /** Hook called after each LLM call with cost info (for BudgetLedger integration) */
   onSpend?: (modelId: string, inputTokens: number, outputTokens: number, costUsd: number) => Promise<void>;
+  /** Optional path for persisted aggregate cost/token/call metrics. */
+  metricsPersistencePath?: string;
 }
 
 /** Anthropic model pricing (as of 2026-05-01) */
@@ -161,6 +165,7 @@ export class LLMClient {
   private currentAnthropicKey: string | null = null;
   private currentOpenAIKey: string | null = null;
   private logger = createLogger('gagent', { minLevel: LogLevel.DEBUG });
+  private metricsPersistencePath?: string;
 
   constructor(config: LLMClientConfig = {}) {
     this.config = {
@@ -174,6 +179,8 @@ export class LLMClient {
       modelFallbackChain: ['claude-haiku-4-5-20251001', 'gpt-4o-mini'],
       ...config,
     };
+    this.metricsPersistencePath = this.config.metricsPersistencePath;
+    this.loadPersistedMetrics();
 
     // Normalize API keys to arrays
     this.anthropicKeys = Array.isArray(this.config.anthropicApiKey)
@@ -415,6 +422,7 @@ export class LLMClient {
         this.totalCostUsd += cost;
         this.totalTokens += inputTokens + outputTokens;
         this.callCount++;
+        this.persistMetrics();
 
         // Call spend hook if provided (for BudgetLedger integration)
         if (this.config.onSpend) {
@@ -822,6 +830,7 @@ export class LLMClient {
     this.totalCostUsd = 0;
     this.totalTokens = 0;
     this.callCount = 0;
+    this.persistMetrics();
   }
 
   /**
@@ -829,5 +838,39 @@ export class LLMClient {
    */
   getModelByTier(tier: 'tier1' | 'tier2' | 'tier3'): string {
     return MODEL_TIERS[tier];
+  }
+
+  private loadPersistedMetrics(): void {
+    if (!this.metricsPersistencePath || !fs.existsSync(this.metricsPersistencePath)) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.metricsPersistencePath, 'utf8'));
+      this.totalCostUsd = typeof parsed.totalCostUsd === 'number' ? parsed.totalCostUsd : 0;
+      this.totalTokens = typeof parsed.totalTokens === 'number' ? parsed.totalTokens : 0;
+      this.callCount = typeof parsed.callCount === 'number' ? parsed.callCount : 0;
+    } catch (error) {
+      this.logger.warn('Failed to load persisted LLM metrics', { error: String(error) });
+    }
+  }
+
+  private persistMetrics(): void {
+    if (!this.metricsPersistencePath) {
+      return;
+    }
+
+    try {
+      const dir = path.dirname(this.metricsPersistencePath);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(this.metricsPersistencePath, JSON.stringify({
+        totalCostUsd: this.totalCostUsd,
+        totalTokens: this.totalTokens,
+        callCount: this.callCount,
+        updatedAt: new Date().toISOString(),
+      }, null, 2));
+    } catch (error) {
+      this.logger.warn('Failed to persist LLM metrics', { error: String(error) });
+    }
   }
 }
