@@ -300,13 +300,20 @@ program
 program
   .command('eval')
   .description('Run evaluation on pipeline performance')
+  .argument('[mode]', 'Optional mode, e.g. regress')
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
+  .option('--against <receipt>', 'Receipt path or ID to compare against in regress mode')
   .option('--cycles <number>', 'Number of cycles to run for statistical comparison', '1')
   .option('--budget-usd <amount>', 'Maximum budget in USD', '10')
   .option('-o, --output <path>', 'Write output to file (JSON format)')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
-  .action(async (options) => {
+  .action(async (mode, options) => {
+    if (mode === 'regress') {
+      await runReceiptRegression(options.against, options);
+      return;
+    }
+
     console.log(chalk.blue('[GAgent] Running evaluation'));
 
     try {
@@ -400,6 +407,7 @@ program
   .action(async (id, options) => {
     // Check if ID looks like a hash (64 hex chars) or receipt ID
     const isHash = /^[a-f0-9]{64}$/i.test(id);
+    const isCorpusSha8 = /^[a-f0-9]{8}$/i.test(id);
 
     if (isHash) {
       // Use ReplayManager for hash-based replay
@@ -436,28 +444,11 @@ program
       console.log(chalk.blue(`[GAgent] Replaying receipt: ${id}`));
 
       try {
-        const fs = await import('fs/promises');
-        const path = await import('path');
-        
-        // Find receipt in weekly receipt files
-        const now = new Date();
-        const year = now.getFullYear();
-        const weekNum = Math.ceil((now.getTime() - new Date(year, 0, 1).getTime()) / (7 * 24 * 60 * 60 * 1000));
-        const week = `${year}-W${String(weekNum).padStart(2, '0')}`;
-        
-        const receiptPath = path.join(process.cwd(), 'gagent', 'test', 'baselines', `receipts-${week}.jsonl`);
-        
-        const content = await fs.readFile(receiptPath, 'utf8');
-        const lines = content.trim().split('\n').filter((l: string) => l);
-        
-        let targetReceipt = null;
-        for (const line of lines) {
-          const receipt = JSON.parse(line);
-          if (receipt.id === id || receipt.request_id === id) {
-            targetReceipt = receipt;
-            break;
-          }
-        }
+        const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+        const receiptRegistry = new ReceiptRegistry('gagent');
+        const targetReceipt = isCorpusSha8
+          ? (await receiptRegistry.getByCorpusSha8(id)).at(-1)
+          : await receiptRegistry.getByIdOrPath(id);
         
         if (!targetReceipt) {
           console.error(chalk.red(`[GAgent] Receipt not found: ${id}`));
@@ -470,7 +461,13 @@ program
           process.exit(0);
         }
         
-        console.log(chalk.gray(`Task: ${targetReceipt.task}`));
+        const task = (targetReceipt as any).metadata?.task || (targetReceipt as any).task;
+        if (!task) {
+          console.error(chalk.red('[GAgent] Receipt does not contain replayable task metadata'));
+          process.exit(1);
+        }
+
+        console.log(chalk.gray(`Task: ${task}`));
         console.log(chalk.gray(`Original timestamp: ${targetReceipt.timestamp}`));
         
         // Re-execute with original parameters
@@ -487,11 +484,11 @@ program
         }
 
         const result = await pipeline.execute({
-          task: targetReceipt.task,
-          parallel: targetReceipt.options?.parallel || 1,
-          verify: targetReceipt.options?.verify || false,
-          cognitiveCheck: targetReceipt.options?.cognitiveCheck || false,
-          learn: targetReceipt.options?.learn || false,
+          task,
+          parallel: (targetReceipt as any).metadata?.parallel || (targetReceipt as any).options?.parallel || 1,
+          verify: (targetReceipt as any).metadata?.verify || (targetReceipt as any).options?.verify || false,
+          cognitiveCheck: (targetReceipt as any).metadata?.cognitive_check || (targetReceipt as any).options?.cognitiveCheck || false,
+          learn: (targetReceipt as any).metadata?.learn || (targetReceipt as any).options?.learn || false,
           dryRun: false,
           cycles,
           budgetUsd: budget,
@@ -512,6 +509,76 @@ program
         console.error(chalk.red('[GAgent] Replay failed:'), error);
         process.exit(1);
       }
+    }
+  });
+
+program
+  .command('receipts')
+  .description('List execution receipts')
+  .option('--since <date>', 'Only include receipts since YYYY-MM-DD')
+  .option('--until <date>', 'Only include receipts up to YYYY-MM-DD')
+  .option('--limit <n>', 'Maximum number of receipts to print', '50')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+      const receiptRegistry = new ReceiptRegistry('gagent');
+      const start = options.since ? new Date(options.since) : new Date(0);
+      const end = options.until ? new Date(options.until) : new Date();
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        console.error(chalk.red('[GAgent] --since/--until must be valid dates'));
+        process.exit(1);
+      }
+
+      const limit = parseInt(options.limit);
+      if (isNaN(limit) || limit < 1) {
+        console.error(chalk.red('[GAgent] --limit must be a positive integer'));
+        process.exit(1);
+      }
+
+      const receipts = (await receiptRegistry.getAllBetween(start, end)).slice(-limit);
+      if (options.json) {
+        console.log(JSON.stringify(receipts, null, 2));
+      } else {
+        for (const receipt of receipts) {
+          console.log(`${receipt.timestamp} ${receipt.receipt_id} ${receipt.verdict} score=${receipt.overall_score.toFixed(3)} corpus=${receipt.metadata?.corpus_sha8 || receipt.input_hash.substring(0, 8)}`);
+        }
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GAgent] Receipt query failed:'), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('diff <receiptA> <receiptB>')
+  .description('Diff two execution receipts')
+  .option('--json', 'Output as JSON')
+  .action(async (receiptA, receiptB, options) => {
+    try {
+      const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+      const receiptRegistry = new ReceiptRegistry('gagent');
+      const a = await receiptRegistry.getByIdOrPath(receiptA);
+      const b = await receiptRegistry.getByIdOrPath(receiptB);
+      if (!a || !b) {
+        console.error(chalk.red('[GAgent] Both receipts must exist'));
+        process.exit(1);
+      }
+
+      const diff = receiptRegistry.diff(a, b);
+      if (options.json) {
+        console.log(JSON.stringify(diff, null, 2));
+      } else {
+        console.log(chalk.blue('[GAgent] Receipt Diff'));
+        console.log(`  Verdict: ${diff.verdict.from} -> ${diff.verdict.to}`);
+        console.log(`  Overall score: ${diff.overall_score.from} -> ${diff.overall_score.to} (${diff.overall_score.delta >= 0 ? '+' : ''}${diff.overall_score.delta.toFixed(3)})`);
+        console.log(`  Cost: $${diff.cost_usd.from.toFixed(4)} -> $${diff.cost_usd.to.toFixed(4)} (${diff.cost_usd.delta >= 0 ? '+' : ''}${diff.cost_usd.delta.toFixed(4)})`);
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GAgent] Receipt diff failed:'), error);
+      process.exit(1);
     }
   });
 
@@ -673,10 +740,16 @@ program
   .command('regress')
   .description('Run a regression check comparing current performance to baseline')
   .option('--baseline <rate>', 'Baseline pass rate to compare against', '0.7')
+  .option('--against <receipt>', 'Compare latest receipt against a baseline receipt path or ID')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
+      if (options.against) {
+        await runReceiptRegression(options.against, options);
+        return;
+      }
+
       const baselineRate = parseFloat(options.baseline);
       if (isNaN(baselineRate) || baselineRate < 0 || baselineRate > 1) {
         console.error(chalk.red('[GAgent] --baseline must be a number between 0 and 1'));
@@ -791,6 +864,51 @@ function calculateStdDev(values: number[]): number {
   const squaredDiffs = values.map(v => Math.pow(v - mean, 2));
   const avgSquaredDiff = squaredDiffs.reduce((sum, v) => sum + v, 0) / values.length;
   return Math.sqrt(avgSquaredDiff);
+}
+
+async function runReceiptRegression(against: string | undefined, options: any): Promise<void> {
+  if (!against) {
+    console.error(chalk.red('[GAgent] --against is required for receipt regression'));
+    process.exit(1);
+  }
+
+  const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+  const receiptRegistry = new ReceiptRegistry('gagent');
+  const baseline = await receiptRegistry.getByIdOrPath(against);
+  const latest = await receiptRegistry.getLatest();
+
+  if (!baseline || !latest) {
+    console.error(chalk.red('[GAgent] Baseline and latest receipts must both exist'));
+    process.exit(1);
+  }
+
+  const diff = receiptRegistry.diff(baseline, latest);
+  const regressionPassed =
+    latest.overall_score >= baseline.overall_score &&
+    latest.hard_gates_passed &&
+    latest.verdict !== 'fail';
+
+  const result = {
+    passed: regressionPassed,
+    baseline_receipt: baseline.receipt_id,
+    current_receipt: latest.receipt_id,
+    baseline_score: baseline.overall_score,
+    current_score: latest.overall_score,
+    delta: latest.overall_score - baseline.overall_score,
+    diff,
+  };
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else if (!options.quiet) {
+    console.log(chalk.blue('[GAgent] Receipt Regression Check'));
+    console.log(`  Status: ${regressionPassed ? chalk.green('PASSED') : chalk.red('FAILED')}`);
+    console.log(`  Baseline: ${baseline.receipt_id} (${baseline.overall_score.toFixed(3)})`);
+    console.log(`  Current: ${latest.receipt_id} (${latest.overall_score.toFixed(3)})`);
+    console.log(`  Delta: ${result.delta >= 0 ? chalk.green(`+${result.delta.toFixed(3)}`) : chalk.red(result.delta.toFixed(3))}`);
+  }
+
+  process.exit(regressionPassed ? 0 : 1);
 }
 
 program.parse();
