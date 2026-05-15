@@ -348,8 +348,7 @@ export async function startMcpServer(
         }
 
         case 'gagent_config_set': {
-          config.set(args.key as string, args.value);
-          await config.save();
+          await config.set(args.key as string, args.value);
           return {
             content: [
               {

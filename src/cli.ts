@@ -211,8 +211,7 @@ program
       // Parse value as JSON if possible
       let parsed = options.set[1];
       try { parsed = JSON.parse(parsed); } catch {}
-      config.set(options.set[0], parsed);
-      await config.save();
+      await config.set(options.set[0], parsed);
       if (!options.quiet) {
         console.log(chalk.green('Config updated'));
       }

@@ -69,10 +69,10 @@ describe('GAgentConfig', () => {
     expect(config.get('integration.shared_memory')).toBe(true);
   });
 
-  it('set() and get() round-trip a value', () => {
+  it('set() and get() round-trip a value', async () => {
     const nonExistent = path.join(os.tmpdir(), `gagent-test-${Date.now()}.json`);
     const config = new GAgentConfig({ configPath: nonExistent });
-    config.set('pipeline.default_parallel', 5);
+    await config.set('pipeline.default_parallel', 5);
     expect(config.get('pipeline.default_parallel')).toBe(5);
   });
 

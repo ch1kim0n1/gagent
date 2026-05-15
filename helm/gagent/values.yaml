@@ -35,6 +35,6 @@ config:
   tierSelection: "auto"
 
 secrets:
-  postgresUrl: "postgres://gagent:gagent_password@postgres:5432/gstack"
-  anthropicApiKey: "your-anthropic-api-key-here"
-  openaiApiKey: "your-openai-api-key-here"
+  postgresUrl: ""
+  anthropicApiKey: ""
+  openaiApiKey: ""
