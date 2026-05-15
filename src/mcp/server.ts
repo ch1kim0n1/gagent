@@ -14,9 +14,9 @@ import {
   GBrainClientError,
 } from '../../../shared/src/core/gbrain-client.js';
 import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
-import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
+import { LocalLogger, type LogLevel } from '../core/observability.js';
 
-const logger = new StructuredLogger('gagent-mcp-server');
+const logger = new LocalLogger('gagent-mcp-server', (process.env.GAGENT_LOG_LEVEL as LogLevel) || 'INFO');
 
 type McpScope = 'read' | 'write';
 

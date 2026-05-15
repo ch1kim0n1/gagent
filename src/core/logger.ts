@@ -1,6 +1,4 @@
-/**
- * Logging utility for GAgent
- */
+import { redactPII } from './observability.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -44,8 +42,17 @@ export class Logger {
     this.entries.push(entry);
 
     const levelName = LogLevel[level];
-    const contextStr = context ? ` ${JSON.stringify(context)}` : '';
-    console.log(`[${entry.timestamp.toISOString()}] [${levelName}] ${message}${contextStr}`);
+    const line = JSON.stringify(redactPII({
+      timestamp: entry.timestamp.toISOString(),
+      level: levelName,
+      component: 'gagent',
+      message,
+      ...(context ? { context } : {}),
+    }));
+    if (level >= LogLevel.ERROR) console.error(line);
+    else if (level === LogLevel.WARN) console.warn(line);
+    else if (level === LogLevel.DEBUG) console.debug(line);
+    else console.info(line);
   }
 
   debug(message: string, context?: Record<string, unknown>): void {

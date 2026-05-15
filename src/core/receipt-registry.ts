@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
+import { coreLogger } from './observability.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -130,7 +131,10 @@ export class ReceiptRegistry {
     try {
       const existingSchema = await this.readSchema();
       if (existingSchema && existingSchema.version !== this.SCHEMA_VERSION) {
-        console.warn(`[ReceiptRegistry] Schema version mismatch: expected ${this.SCHEMA_VERSION}, got ${existingSchema.version}. Migration may be required.`);
+        coreLogger.warn('Receipt schema version mismatch. Migration may be required.', {
+          expected: this.SCHEMA_VERSION,
+          actual: existingSchema.version,
+        });
       }
       
       if (!existingSchema) {
@@ -206,7 +210,7 @@ export class ReceiptRegistry {
       if (receipt._signature && this.signatureKey) {
         const { _signature, _signed_at, ...data } = receipt;
         if (!verifyReceipt(data, _signature, this.signatureKey)) {
-          console.warn('[ReceiptRegistry] Last receipt signature verification failed');
+          coreLogger.warn('Last receipt signature verification failed');
         }
       }
       
@@ -237,7 +241,7 @@ export class ReceiptRegistry {
           if ((receipt as any)._signature && this.signatureKey) {
             const { _signature, _signed_at, ...data } = receipt as any;
             if (!verifyReceipt(data, _signature, this.signatureKey)) {
-              console.warn('[ReceiptRegistry] Receipt signature verification failed:', receipt.timestamp);
+              coreLogger.warn('Receipt signature verification failed', { timestamp: receipt.timestamp });
             }
           }
           receipts.push(receipt);

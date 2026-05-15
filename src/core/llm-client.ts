@@ -13,7 +13,7 @@ import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
 import * as fs from 'fs';
 import * as path from 'path';
-import { createLogger, LogLevel } from '../../../shared/src/core/structured-logger.js';
+import { coreLogger, LocalLogger, type LogLevel } from './observability.js';
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -111,7 +111,7 @@ export function estimateCostUsd(
 ): number {
   const pricing = MODEL_PRICING[modelId];
   if (!pricing) {
-    console.warn(`[LLMClient] No pricing for model: ${modelId}`);
+    coreLogger.warn('No pricing for model', { model_id: modelId });
     return 0;
   }
   return (
@@ -139,7 +139,7 @@ export function estimateTokens(text: string, model: string = 'gpt-4o'): number {
     return tokens.length;
   } catch (error) {
     // Fallback to a general-purpose tokenizer rather than a length heuristic.
-    console.warn('[LLMClient] tiktoken failed, falling back to cl100k_base:', error);
+    coreLogger.warn('tiktoken failed, falling back to cl100k_base', { error: error instanceof Error ? error.message : String(error) });
     const fallback = get_encoding('cl100k_base');
     const tokens = fallback.encode(text);
     fallback.free();
@@ -164,7 +164,7 @@ export class LLMClient {
   private keyUsageCount: Map<string, number> = new Map();
   private currentAnthropicKey: string | null = null;
   private currentOpenAIKey: string | null = null;
-  private logger = createLogger('gagent', { minLevel: LogLevel.DEBUG });
+  private logger = new LocalLogger('gagent-llm-client', (process.env.GAGENT_LOG_LEVEL as LogLevel) || 'DEBUG');
   private metricsPersistencePath?: string;
 
   constructor(config: LLMClientConfig = {}) {
@@ -328,7 +328,7 @@ export class LLMClient {
     key: string,
     error: any
   ): Promise<boolean> {
-    console.warn(`[LLMClient] Key failed for ${provider}:`, error);
+    this.logger.warn('LLM key failed', { provider, error: error instanceof Error ? error.message : String(error) });
 
     // Call failure hook if provided
     if (this.config.onKeyFailure) {
@@ -352,7 +352,10 @@ export class LLMClient {
       this.rotateKey(provider);
       return true;
     } catch (rotateError) {
-      console.error(`[LLMClient] Key rotation failed for ${provider}:`, rotateError);
+      this.logger.error('LLM key rotation failed', {
+        provider,
+        error: rotateError instanceof Error ? rotateError.message : String(rotateError),
+      });
       return false;
     }
   }
@@ -491,7 +494,7 @@ export class LLMClient {
           throw new Error(`No API client available for model: ${model}`);
         }
       } catch (error) {
-        console.warn(`[LLMClient] Streaming model ${model} failed, trying next in chain:`, error);
+        this.logger.warn('Streaming model failed, trying next in chain', { model, error: error instanceof Error ? error.message : String(error) });
         continue;
       }
     }
@@ -640,19 +643,23 @@ export class LLMClient {
         
         if (rateLimitDelay !== null) {
           delay = rateLimitDelay;
-          console.warn(
-            `[LLMClient] ${operationName} attempt ${attempt + 1}/${maxRetries + 1} hit rate limit, ` +
-            `retrying in ${delay}ms (Retry-After respected):`,
-            error
-          );
+          this.logger.warn('LLM call hit rate limit; retrying after Retry-After delay', {
+            operation: operationName,
+            attempt: attempt + 1,
+            max_attempts: maxRetries + 1,
+            delay_ms: delay,
+            error: error instanceof Error ? error.message : String(error),
+          });
         } else {
           // Calculate exponential backoff delay
           delay = baseDelay * Math.pow(2, attempt);
-          console.warn(
-            `[LLMClient] ${operationName} attempt ${attempt + 1}/${maxRetries + 1} failed, ` +
-            `retrying in ${delay}ms:`,
-            error
-          );
+          this.logger.warn('LLM call failed; retrying with exponential backoff', {
+            operation: operationName,
+            attempt: attempt + 1,
+            max_attempts: maxRetries + 1,
+            delay_ms: delay,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
         
         await this.sleep(delay);

@@ -1,0 +1,54 @@
+{
+  "title": "GAgent Observability",
+  "uid": "gagent-observability",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["gagent", "gstack"],
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Public Method Throughput",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (method, status) (rate(gagent_public_method_throughput_total[5m]))",
+          "legendFormat": "{{method}} {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Public Method Latency P50/P95/P99",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "gagent_public_method_latency_ms{quantile=~\"0.5|0.95|0.99\"}",
+          "legendFormat": "{{method}} p{{quantile}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Rate",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (method) (rate(gagent_public_method_errors_total[5m]))",
+          "legendFormat": "{{method}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Health Check Failures",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (service) (rate(gagent_health_check_errors_total[5m]))",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    }
+  ]
+}

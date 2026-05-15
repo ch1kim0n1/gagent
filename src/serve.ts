@@ -2,10 +2,10 @@ import { ToolRegistry } from './tools/registry.js';
 import { GAgentConfig } from './config/manager.js';
 import { startMcpServer } from './mcp/server.js';
 import { HealthServer, type HealthCheckResult, type ReadinessCheckResult } from '../../shared/src/core/health-server.js';
-import { StructuredLogger } from '../../shared/src/observability/structured-logger.js';
+import { LocalLogger, type LogLevel } from './core/observability.js';
 
 const HEALTH_PORT = process.env.HEALTH_PORT ? parseInt(process.env.HEALTH_PORT, 10) : 8080;
-const logger = new StructuredLogger('gagent-serve');
+const logger = new LocalLogger('gagent-serve', (process.env.GAGENT_LOG_LEVEL as LogLevel) || 'INFO');
 
 async function main() {
   const config = new GAgentConfig();
@@ -27,7 +27,7 @@ async function main() {
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
-    console.log(`Received ${signal}, shutting down gracefully...`);
+    logger.info(`Received ${signal}, shutting down gracefully`);
     await healthServer.shutdown();
     process.exit(0);
   };
@@ -43,9 +43,9 @@ async function main() {
     await healthServer.start();
     await startMcpServer(registry, config);
   } catch (error) {
-    logger.error('Failed to start GAgent', error instanceof Error ? error : new Error(String(error)));
+    logger.error('Failed to start GAgent', error instanceof Error ? error : { error: String(error) });
     process.exit(1);
   }
 }
 
-main().catch((error) => logger.error('Main function error', error instanceof Error ? error : new Error(String(error))));
+main().catch((error) => logger.error('Main function error', error instanceof Error ? error : { error: String(error) }));

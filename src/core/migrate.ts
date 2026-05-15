@@ -4,6 +4,7 @@
  */
 
 import { BrainEngine, Migration } from './engine.js';
+import { coreLogger } from './observability.js';
 
 export class Migrator {
   private engine: BrainEngine;
@@ -33,7 +34,7 @@ export class Migrator {
 
     for (const migration of this.migrations) {
       if (migration.version > currentVersion) {
-        console.log(`Running migration ${migration.version}: ${migration.name}`);
+        coreLogger.info('Running migration', { version: migration.version, name: migration.name });
         await this.engine.execute(migration.up);
         await this.engine.execute(
           'INSERT INTO migrations (version, name) VALUES (?, ?)',
@@ -52,7 +53,7 @@ export class Migrator {
     for (let i = this.migrations.length - 1; i >= 0; i--) {
       const migration = this.migrations[i];
       if (migration.version > targetVersion && migration.version <= currentVersion) {
-        console.log(`Rolling back migration ${migration.version}: ${migration.name}`);
+        coreLogger.info('Rolling back migration', { version: migration.version, name: migration.name });
         await this.engine.execute(migration.down);
         await this.engine.execute(
           'DELETE FROM migrations WHERE version = ?',

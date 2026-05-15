@@ -1023,6 +1023,27 @@ program
   });
 
 program
+  .command('metrics')
+  .description('Export observability metrics')
+  .option('--format <format>', 'Output format: prometheus, otel, json', 'prometheus')
+  .option('--json', 'Output observability snapshot as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const format = options.json ? 'json' : String(options.format || 'prometheus').toLowerCase();
+    if (format === 'prometheus') {
+      if (!options.quiet) console.log(pipeline.exportPrometheusMetrics());
+    } else if (format === 'otel') {
+      if (!options.quiet) console.log(JSON.stringify(pipeline.exportOpenTelemetryMetrics(), null, 2));
+    } else if (format === 'json') {
+      if (!options.quiet) console.log(JSON.stringify(pipeline.getObservabilitySnapshot(), null, 2));
+    } else {
+      console.error(chalk.red('[GAgent] --format must be one of: prometheus, otel, json'));
+      process.exit(1);
+    }
+    process.exit(0);
+  });
+
+program
   .command('completion')
   .description('Print shell completion script')
   .argument('[shell]', 'Shell type: bash, zsh, or fish', 'bash')
@@ -1127,6 +1148,7 @@ function buildCompletionScript(shell: string): string | null {
     'trend',
     'regress',
     'drift',
+    'metrics',
     'completion',
   ];
   const options = [

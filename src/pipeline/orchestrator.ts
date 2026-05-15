@@ -27,128 +27,9 @@ import {
 import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
+import { GAgentObservability, LocalAuditLogger, LocalLogger, coreLogger } from '../core/observability.js';
 
-// Local structured logger (to be replaced with shared module when package dependencies are set up)
-type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-
-interface LogContext {
-  request_id?: string;
-  correlation_id?: string;
-  tool_name?: string;
-  [key: string]: any;
-}
-
-class LocalLogger {
-  private level: LogLevel;
-  private toolName: string;
-  private component: string;
-  private context: Record<string, any>;
-
-  constructor(toolName: string, level: LogLevel = 'INFO') {
-    this.toolName = toolName;
-    this.level = level;
-    this.component = toolName;
-    this.context = {};
-  }
-
-  private shouldLog(level: LogLevel): boolean {
-    const levels: LogLevel[] = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
-    return levels.indexOf(level) >= levels.indexOf(this.level);
-  }
-
-  private formatMessage(level: string, message: string, context?: Record<string, any>): string {
-    return JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level,
-      component: this.component,
-      message,
-      ...this.context,
-      ...context,
-    });
-  }
-
-  debug(message: string, context?: Record<string, any>): void {
-    if (!this.shouldLog('DEBUG')) return;
-    const fullMessage = this.formatMessage('DEBUG', message, context);
-    console.debug(fullMessage);
-  }
-
-  info(message: string, context?: Record<string, any>): void {
-    if (!this.shouldLog('INFO')) return;
-    const fullMessage = this.formatMessage('INFO', message, context);
-    console.info(fullMessage);
-  }
-
-  warn(message: string, context?: Record<string, any>): void {
-    if (!this.shouldLog('WARN')) return;
-    const fullMessage = this.formatMessage('WARN', message, context);
-    console.warn(fullMessage);
-  }
-
-  error(message: string, error?: Error | Record<string, any>): void {
-    if (!this.shouldLog('ERROR')) return;
-    const fullMessage = this.formatMessage('ERROR', message, error instanceof Error ? { error: error.message, stack: error.stack } : error);
-    console.error(fullMessage);
-  }
-
-  child(context: Record<string, any>): LocalLogger {
-    const child = new LocalLogger(this.toolName, this.level);
-    child.context = { ...this.context, ...context };
-    return child;
-  }
-}
-
-const logger = new LocalLogger('gagent');
-
-// Local audit logger writes decision JSONL to ~/.{tool}/audit/decisions-YYYY-Www.jsonl
-class LocalAuditLogger {
-  private auditPath: string;
-
-  constructor(private tool: string) {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), 0, 1);
-    const weekNum = Math.ceil(((now.getTime() - start.getTime()) / 86400000 + start.getDay() + 1) / 7);
-    const week = `${now.getFullYear()}-W${String(weekNum).padStart(2, '0')}`;
-    const fs = require('fs');
-    const path = require('path');
-    const os = require('os');
-    const dir = path.join(os.homedir(), `.${tool}`, 'audit');
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-    } catch {
-      // ignore
-    }
-    this.auditPath = path.join(dir, `decisions-${week}.jsonl`);
-  }
-
-  async log(entry: {
-    operation: string;
-    decision: string;
-    reasoning?: string;
-    model_tier?: string;
-    model_name?: string;
-    cost_usd?: number;
-    tokens?: number;
-    latency_ms?: number;
-    success: boolean;
-    error?: string;
-    metadata?: Record<string, any>;
-  }): Promise<void> {
-    const auditEntry = {
-      timestamp: new Date().toISOString(),
-      tool: this.tool,
-      ...entry,
-    };
-    try {
-      const fs = require('fs').promises;
-      await fs.appendFile(this.auditPath, JSON.stringify(auditEntry) + '\n', 'utf8');
-    } catch (err) {
-      logger.warn('Audit write failed', { error: String(err) });
-    }
-  }
-}
-
-const auditLogger = new LocalAuditLogger('gagent');
+const logger = coreLogger;
 
 interface PipelineOptions {
   task: string;
@@ -238,6 +119,8 @@ export class Pipeline {
   private budgetLedgerReady: Promise<void>;
   private latencyTracker: LatencyTracker;
   private auditLogger: LocalAuditLogger;
+  private logger: LocalLogger;
+  private observability: GAgentObservability;
   private gbrainEndpoint: string;
   private gstackEndpoint: string;
   private gorchestratorEndpoint: string;
@@ -292,6 +175,9 @@ export class Pipeline {
       drift_threshold: 0.2,
       alert_threshold: 0.3,
     });
+    this.observability = new GAgentObservability('gagent');
+    this.auditLogger = this.observability.audit;
+    this.logger = this.observability.logger;
     this.budgetLedger = new BudgetLedger({
       max_budget_usd: this.multiModelConfig.cost_budget_usd_per_hour,
       default_ttl_ms: 5 * 60 * 1000,
@@ -300,7 +186,7 @@ export class Pipeline {
       },
     }, 'gagent');
     this.budgetLedgerReady = this.budgetLedger.init().catch(error => {
-      logger.warn('Budget ledger initialization failed', { error: String(error) });
+      this.logger.warn('Budget ledger initialization failed', { error: String(error) });
     });
     this.llmClient = new LLMClient({
       ...llmConfig,
@@ -308,7 +194,6 @@ export class Pipeline {
         || path.join(os.homedir(), '.gagent', 'audit', 'llm-metrics.json'),
     });
     this.latencyTracker = new LatencyTracker(1000);
-    this.auditLogger = new LocalAuditLogger('gagent');
 
     // Initialize escalation metrics
     this.escalationMetrics = {
@@ -365,14 +250,61 @@ export class Pipeline {
     return stages.join('\n');
   }
 
+  exportPrometheusMetrics(): string {
+    return this.observability.metrics.prometheus();
+  }
+
+  exportOpenTelemetryMetrics(): Record<string, unknown> {
+    return this.observability.metrics.openTelemetry();
+  }
+
+  getObservabilitySnapshot(): Record<string, unknown> {
+    return this.observability.snapshot();
+  }
+
+  logShellJob(entry: {
+    command: string;
+    cwd?: string;
+    exit_code?: number;
+    duration_ms?: number;
+    correlation_id?: string;
+    trace_id?: string;
+    metadata?: Record<string, unknown>;
+    error?: string;
+  }): void {
+    this.auditLogger.logShellJob(entry);
+  }
+
   async execute(options: PipelineOptions): Promise<PipelineResult> {
     const start = performance.now();
+    const span = this.observability.tracer.startSpan('GAgent.execute', {
+      task: options.task,
+      parallel: options.parallel,
+      verify: options.verify,
+      cognitive_check: options.cognitiveCheck,
+      learn: options.learn,
+    });
     const tier1StartTime = Date.now();
     const runStartCostUsd = this.llmClient.getTotalCostUsd();
     try {
       // Check budget before execution
       if (options.budgetUsd !== undefined && this.escalationMetrics.budget_remaining_usd < options.budgetUsd) {
-        logger.error('Budget exceeded before execution', {
+        const latencyMs = performance.now() - start;
+        this.observability.metrics.recordPublicMethod('execute', latencyMs, 'error');
+        this.auditLogger.logDecision({
+          operation: 'execute',
+          decision: 'budget_exceeded',
+          trace_id: span.trace_id,
+          success: false,
+          latency_ms: latencyMs,
+          error: `Budget exceeded: remaining $${this.escalationMetrics.budget_remaining_usd.toFixed(2)}, requested $${options.budgetUsd.toFixed(2)}`,
+          metadata: {
+            budget_remaining: this.escalationMetrics.budget_remaining_usd,
+            requested_budget: options.budgetUsd,
+          },
+        });
+        this.observability.tracer.endSpan(span, new Error('Budget exceeded before execution'));
+        this.logger.error('Budget exceeded before execution', {
           budget_remaining: this.escalationMetrics.budget_remaining_usd,
           requested_budget: options.budgetUsd,
         });
@@ -420,7 +352,7 @@ export class Pipeline {
           this.escalationMetrics.escalated_tasks++;
           this.escalationMetrics.tier2_count++;
 
-          logger.info('Escalating to Tier 2 for execution planning', { tier: 'tier2' });
+          this.logger.info('Escalating to Tier 2 for execution planning', { tier: 'tier2' });
 
           // Re-run with improved planning
           if (executionDecision.parallel > 1) {
@@ -450,7 +382,7 @@ export class Pipeline {
               const tier3StartTime = Date.now();
               this.escalationMetrics.tier3_count++;
 
-              logger.info('Escalating to Tier 3 for critical execution planning', { tier: 'tier3' });
+              this.logger.info('Escalating to Tier 3 for critical execution planning', { tier: 'tier3' });
 
               // Re-run with Tier 3 premium model
               if (executionDecision.parallel > 1) {
@@ -526,7 +458,23 @@ export class Pipeline {
         this.persistenceManager.saveEscalationMetrics(this.escalationMetrics);
       });
 
-      this.latencyTracker.record(performance.now() - start);
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('execute', latencyMs, 'ok');
+      this.auditLogger.logDecision({
+        operation: 'execute',
+        decision: 'success',
+        correlation_id: runId,
+        trace_id: span.trace_id,
+        success: true,
+        latency_ms: latencyMs,
+        cost_usd: costUsd,
+        metadata: {
+          attempts: attempts.length,
+          winner: winner?.id,
+        },
+      });
+      this.observability.tracer.endSpan(span);
       return {
         success: true,
         winner,
@@ -534,7 +482,19 @@ export class Pipeline {
       };
 
     } catch (error) {
-      this.latencyTracker.record(performance.now() - start);
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('execute', latencyMs, 'error');
+      this.auditLogger.logDecision({
+        operation: 'execute',
+        decision: 'error',
+        trace_id: span.trace_id,
+        success: false,
+        latency_ms: latencyMs,
+        cost_usd: Math.max(0, this.llmClient.getTotalCostUsd() - runStartCostUsd),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
       this.persistenceManager.saveEscalationMetrics(this.escalationMetrics);
       return {
         success: false,
@@ -1321,7 +1281,9 @@ Return this JSON shape:
    */
   async healthCheck(): Promise<HealthCheckResult[]> {
     const start = performance.now();
+    const span = this.observability.tracer.startSpan('GAgent.healthCheck');
     const results: HealthCheckResult[] = [];
+    try {
 
     // Check gbrain
     const gbrainStart = performance.now();
@@ -1484,8 +1446,38 @@ Return this JSON shape:
       timestamp: new Date().toISOString(),
     });
 
-    this.latencyTracker.record(performance.now() - start);
+    const healthScore = this.calculateHealthScore(results);
+    results.push({
+      service: 'health_score',
+      healthy: healthScore >= 80,
+      latency_ms: performance.now() - start,
+      error: healthScore >= 80 ? undefined : `score=${healthScore}`,
+      timestamp: new Date().toISOString(),
+    });
+
+    const latencyMs = performance.now() - start;
+    this.latencyTracker.record(latencyMs);
+    this.observability.metrics.recordPublicMethod('healthCheck', latencyMs, 'ok');
+    for (const result of results) {
+      this.observability.metrics.observe('gagent_health_check_latency_ms', result.latency_ms, { service: result.service });
+      if (!result.healthy) this.observability.metrics.increment('gagent_health_check_errors_total', { service: result.service });
+    }
+    await this.observability.alertOnHealthDrop(healthScore, results);
+    this.observability.tracer.endSpan(span);
     return results;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('healthCheck', latencyMs, 'error');
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+  }
+
+  private calculateHealthScore(results: HealthCheckResult[]): number {
+    if (results.length === 0) return 0;
+    const healthy = results.filter(result => result.healthy).length;
+    return Math.round((healthy / results.length) * 100);
   }
 
   /**
@@ -1498,27 +1490,43 @@ Return this JSON shape:
     endDate?: string;
   }): Promise<any[]> {
     const start = performance.now();
-    let result;
-    if (options?.startDate && options?.endDate) {
-      const startDate = new Date(options.startDate);
-      const end = new Date(options.endDate);
-      const receipts = await this.receiptRegistry.getAllBetween(startDate, end);
-      
-      // Apply limit and offset
-      result = receipts;
-      if (options.offset) {
-        result = result.slice(options.offset);
+    const span = this.observability.tracer.startSpan('GAgent.getReceipts', {
+      has_date_range: Boolean(options?.startDate && options?.endDate),
+      limit: options?.limit,
+      offset: options?.offset,
+    });
+    try {
+      let result;
+      if (options?.startDate && options?.endDate) {
+        const startDate = new Date(options.startDate);
+        const end = new Date(options.endDate);
+        const receipts = await this.receiptRegistry.getAllBetween(startDate, end);
+
+        // Apply limit and offset
+        result = receipts;
+        if (options.offset) {
+          result = result.slice(options.offset);
+        }
+        if (options.limit) {
+          result = result.slice(0, options.limit);
+        }
+      } else {
+        // If no date range, get latest
+        const latest = await this.receiptRegistry.getLatest();
+        result = latest ? [latest] : [];
       }
-      if (options.limit) {
-        result = result.slice(0, options.limit);
-      }
-    } else {
-      // If no date range, get latest
-      const latest = await this.receiptRegistry.getLatest();
-      result = latest ? [latest] : [];
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getReceipts', latencyMs, 'ok');
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getReceipts', latencyMs, 'error');
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
     }
-    this.latencyTracker.record(performance.now() - start);
-    return result;
   }
 
   /**
@@ -1526,23 +1534,43 @@ Return this JSON shape:
    */
   async getDrift(metricName?: string): Promise<any[]> {
     const start = performance.now();
-    let result;
-    if (metricName) {
-      const driftResult = this.driftDetector.detectDrift(metricName);
-      result = driftResult ? [driftResult] : [];
-    } else {
-      // If no metric specified, return all available metrics
-      result = this.driftDetector.detectAllDrift();
+    const span = this.observability.tracer.startSpan('GAgent.getDrift', { metric_name: metricName });
+    try {
+      let result;
+      if (metricName) {
+        const driftResult = this.driftDetector.detectDrift(metricName);
+        result = driftResult ? [driftResult] : [];
+      } else {
+        // If no metric specified, return all available metrics
+        result = this.driftDetector.detectAllDrift();
+      }
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getDrift', latencyMs, 'ok');
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      const latencyMs = performance.now() - start;
+      this.latencyTracker.record(latencyMs);
+      this.observability.metrics.recordPublicMethod('getDrift', latencyMs, 'error');
+      this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
+      throw error;
     }
-    this.latencyTracker.record(performance.now() - start);
-    return result;
   }
 
   /**
    * Get cost statistics
    */
   getCostStats() {
-    return this.budgetLedger.getStats();
+    const start = performance.now();
+    try {
+      const result = this.budgetLedger.getStats();
+      this.observability.metrics.recordPublicMethod('getCostStats', performance.now() - start, 'ok');
+      return result;
+    } catch (error) {
+      this.observability.metrics.recordPublicMethod('getCostStats', performance.now() - start, 'error');
+      throw error;
+    }
   }
 
   /**
