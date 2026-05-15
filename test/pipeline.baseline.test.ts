@@ -3,6 +3,7 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { GAgentConfig } from '../src/config/manager.js';
 import { ReceiptRegistry } from '../src/core/receipt-registry.js';
 import { GAGENT_RUBRIC_V1 } from '../src/core/gagent-rubric.js';
+import { evaluateRegressionGates, loadRegressionBaselines } from '../src/core/regression-gates.js';
 
 describe('Pipeline Baseline Regression Tests', () => {
   let pipeline: Pipeline;
@@ -79,10 +80,13 @@ describe('Pipeline Baseline Regression Tests', () => {
       const latest = await registry.getLatest();
       const currentScore = latest?.overall_score ?? 0;
       
-      // Baseline locked from initial calibration run
-      const baselineOverallScore = 0.5; // Default base score
-      const diff = Math.abs(currentScore - baselineOverallScore);
-      expect(diff).toBeLessThanOrEqual(TOLERANCE);
+      const baselines = await loadRegressionBaselines('test/baselines/regression-baselines.jsonl');
+      const gate = evaluateRegressionGates(latest!, baselines);
+      const scoreGate = gate.results.find(result => result.dimension === 'overall_score');
+      expect(scoreGate).toBeDefined();
+      expect(scoreGate?.tolerance).toBe(TOLERANCE);
+      expect(scoreGate?.wilson_95_ci).toBeDefined();
+      expect(gate.passed).toBe(true);
     }
   });
 

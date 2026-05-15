@@ -1,0 +1,4 @@
+{"dimension":"overall_score","baseline":0.5,"tolerance":0.05,"direction":"min","min_samples":1}
+{"dimension":"cost_usd","baseline":0.05,"tolerance":1,"direction":"max","min_samples":1}
+{"dimension":"latency_ms","baseline":5000,"tolerance":1,"direction":"max","min_samples":1}
+{"dimension":"escalation_rate","baseline":0,"tolerance":0,"direction":"max","min_samples":1}

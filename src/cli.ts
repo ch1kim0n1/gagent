@@ -740,6 +740,7 @@ program
   .command('regress')
   .description('Run a regression check comparing current performance to baseline')
   .option('--baseline <rate>', 'Baseline pass rate to compare against', '0.7')
+  .option('--baseline-file <path>', 'Versioned JSONL baseline file for per-dimension regression gates', 'gagent/test/baselines/regression-baselines.jsonl')
   .option('--against <receipt>', 'Compare latest receipt against a baseline receipt path or ID')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
@@ -748,6 +749,27 @@ program
       if (options.against) {
         await runReceiptRegression(options.against, options);
         return;
+      }
+
+      if (options.baselineFile) {
+        const { ReceiptRegistry } = await import('./core/receipt-registry.js');
+        const { loadRegressionBaselines, evaluateRegressionGates } = await import('./core/regression-gates.js');
+        const receiptRegistry = new ReceiptRegistry('gagent');
+        const latest = await receiptRegistry.getLatest();
+        if (latest) {
+          const baselines = await loadRegressionBaselines(options.baselineFile);
+          const gate = evaluateRegressionGates(latest, baselines);
+          if (options.json) {
+            console.log(JSON.stringify(gate, null, 2));
+          } else if (!options.quiet) {
+            console.log(chalk.blue('[GAgent] Regression Gates'));
+            for (const result of gate.results) {
+              const status = result.passed ? chalk.green('PASSED') : chalk.red('FAILED');
+              console.log(`  ${result.dimension}: ${status} current=${result.current.toFixed(4)} baseline=${result.baseline.toFixed(4)} tolerance=${result.tolerance}`);
+            }
+          }
+          process.exit(gate.passed ? 0 : 1);
+        }
       }
 
       const baselineRate = parseFloat(options.baseline);
