@@ -28,6 +28,7 @@
     "eval:select": "node scripts/eval-tools.js select",
     "verify": "npm run check:all && npm run typecheck && npm test",
     "ci:local": "node scripts/quality-gates.js ci-local",
+    "docs:api": "npx typedoc@0.25.13 --options typedoc.json",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
     "setup": "npm install && npm run build"

@@ -1,76 +1,78 @@
-# GAgent — Unified CLI for the Six-Tool Agent Stack
+# GAgent
 
-A single entry point for GBrain, GStack, GOrchestrator, GMirror, GToM, and GLearn. Designed for Claude Code, Cursor, OpenClaw, and other coding agents.
+GAgent is the unified CLI, MCP server, and local control plane for the six-tool agent stack:
+GBrain, GStack, GOrchestrator, GMirror, GToM, and GLearn. It routes tasks through the
+stack, records execution receipts, tracks budget and drift, and exposes the same workflow
+to shell users and agent clients.
+
+## What It Does
+
+- Runs tasks through a single command surface with optional parallel execution, verification,
+  cognitive checks, and learning capture.
+- Provides MCP tools for agents that need to run tasks, inspect health, query receipts,
+  inspect drift, read cost data, and manage model tiers.
+- Persists run receipts, cost entries, model metrics, budget reservations, and audit logs.
+- Exports Prometheus and OpenTelemetry-compatible observability data.
+- Bridges stack services while degrading cleanly when one external tool is unavailable.
 
 ## Quick Start
 
 ```bash
-# Install
-git clone https://github.com/garrytan/gagent.git && cd gagent && ./install
-
-# Initialize full stack
-gagent init
-
-# Check health across all tools
-gagent health
-
-# Run a task through the full pipeline
-gagent run "implement user authentication" --parallel 5 --verify --learn
+npm install
+npm run build
+node dist/cli.js health
+node dist/cli.js run "implement user authentication" --parallel 3 --verify
 ```
 
-## Architecture
+For local development:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    GAgent CLI                           │
-│              (unified entry point)                      │
-├─────────┬─────────┬─────────┬─────────┬─────────┬───────┤
-│ GBrain  │ GStack  │GOrchest │ GMirror │  GToM   │ GLearn│
-│ (memory)│ (skills)│(parallel│(testing)│(cognitive│(meta) │
-│         │         │ execute)│         │ defense)│       │
-└────┬────┴────┬────┴────┬────┴────┬────┴────┬────┴───┬───┘
-     │         │         │         │         │        │
-     └─────────┴─────────┴─────────┴─────────┴────────┘
-                    Shared GBrain Bus
+```bash
+npm run typecheck
+npm test
+npm run verify
+npm run docs:api
 ```
 
-## Command Structure
+## Command Surface
 
-### Core Commands
+| Command | Purpose |
+| --- | --- |
+| `gagent init` | Detect and configure the local G-Stack installation. |
+| `gagent health` | Check configured tools, internal metrics, and stack health. |
+| `gagent run <task>` | Execute a task through the pipeline. |
+| `gagent sync` | Reconcile local stack state. |
+| `gagent config` | Read and update unified configuration. |
+| `gagent serve` | Start the MCP server. |
+| `gagent backup`, `restore`, `export` | Manage persisted state and portable artifacts. |
+| `gagent eval`, `replay`, `receipts`, `diff` | Record, replay, and inspect execution evidence. |
+| `gagent registry`, `models`, `tier`, `cost` | Inspect tools, model tiers, and budget state. |
+| `gagent trend`, `regress`, `drift`, `metrics` | Analyze quality, regressions, drift, and observability. |
 
-| Command | Description |
-|---------|-------------|
-| `gagent init` | Initialize all six tools, detect existing installs, configure integration |
-| `gagent health` | Health check across all tools with composite score |
-| `gagent run <task>` | Execute task through full pipeline with options |
-| `gagent sync` | Sync state across all tools, resolve drift |
-| `gagent config` | Unified configuration management |
-| `gagent serve` | Start MCP server for Claude Code integration |
+The passthrough commands `brain`, `stack`, `orc`, `mirror`, `tom`, and `learn` delegate to
+the corresponding stack tool. The aliases `run-parallel`, `run-verified`, `run-safe`, and
+`run-smart` provide common pipeline presets.
 
-### Tool-Specific Commands (Passthrough)
+## Pipeline
 
-| Command | Delegates To |
-|---------|--------------|
-| `gagent brain <cmd>` | `gbrain <cmd>` |
-| `gagent stack <cmd>` | `gstack-*` binaries |
-| `gagent orc <cmd>` | `gorchestrator <cmd>` |
-| `gagent mirror <cmd>` | `gmirror <cmd>` |
-| `gagent tom <cmd>` | `gtom <cmd>` |
-| `gagent learn <cmd>` | `glearn <cmd>` |
+```mermaid
+flowchart LR
+  User["CLI or MCP client"] --> GAgent["GAgent pipeline"]
+  GAgent --> GBrainRead["GBrain context lookup"]
+  GAgent --> Planner["Model-tier execution planning"]
+  Planner --> Executor["GStack or GOrchestrator execution"]
+  Executor --> GMirror["GMirror verification"]
+  Executor --> GToM["GToM cognitive check"]
+  GMirror --> Selector["Consensus winner selection"]
+  GToM --> Selector
+  Selector --> Receipts["Signed receipts and SQLite state"]
+  Selector --> GBrainWrite["GBrain memory write"]
+  Selector --> GLearn["GLearn pattern capture"]
+  Receipts --> Metrics["Metrics, traces, audit logs"]
+```
 
-### Pipeline Commands
+## MCP Integration
 
-| Command | What It Does |
-|---------|--------------|
-| `gagent run <task> --parallel N` | GOrchestrator dispatches N attempts |
-| `gagent run <task> --verify` | GMirror tests each output |
-| `gagent run <task> --cognitive-check` | GToM validates decision authenticity |
-| `gagent run <task> --learn` | GLearn captures patterns for refinement |
-| `gagent run <task> --full` | All stages: parallel → verify → check → learn |
-
-## Claude Code Integration
-
-### MCP Server
+Register the MCP server with an agent client:
 
 ```json
 {
@@ -83,140 +85,58 @@ gagent run "implement user authentication" --parallel 5 --verify --learn
 }
 ```
 
-### Exposed Tools
-
-- `gagent_run` — Execute task with pipeline options
-- `gagent_health` — Check system status
-- `gagent_brain_search` — Query GBrain
-- `gagent_stack_review` — Run GStack review
-- `gagent_orc_dispatch` — Parallel dispatch
-- `gagent_mirror_test` — Synthetic user testing
-- `gagent_tom_assess` — Cognitive assessment
-- `gagent_learn_patterns` — Pattern extraction
-
-### Skill Routing (GStack Style)
-
-```
-/run <task>              # Single attempt via GStack
-/run-parallel <task>     # GOrchestrator best-of-N
-/run-verified <task>     # Parallel + GMirror verification
-/run-safe <task>         # Verified + GToM authenticity check
-/run-smart <task>        # Full pipeline with GLearn capture
-```
+Primary MCP tools include `gagent_run`, `gagent_health`, `gagent_brain_search`,
+`gagent_stack_review`, `gagent_config_get`, `gagent_config_set`, `gagent_get_receipts`,
+`gagent_get_drift`, `gagent_get_cost_stats`, `gagent_models`, `gagent_tier`, and
+`gagent_registry`.
 
 ## Configuration
 
-### Unified Config (`~/.gagent/config.json`)
+GAgent reads local config from `~/.gagent/config.json` unless overridden by environment.
+Common environment variables:
 
-```json
-{
-  "version": "1.0.0",
-  "tools": {
-    "gbrain": {
-      "enabled": true,
-      "path": "~/.gbrain",
-      "engine": "pglite",
-      "mcp_registered": true
-    },
-    "gstack": {
-      "enabled": true,
-      "path": "~/.claude/skills/gstack",
-      "skills": ["office-hours", "review", "ship", "qa"]
-    },
-    "gorchestrator": {
-      "enabled": true,
-      "path": "~/.gorchestrator",
-      "max_parallel": 5,
-      "default_attempts": 3
-    },
-    "gmirror": {
-      "enabled": true,
-      "path": "~/.gmirror",
-      "synthetic_users": 50,
-      "modes": ["change-test", "pre-build", "shadow"]
-    },
-    "gtom": {
-      "enabled": true,
-      "path": "~/.gtom",
-      "ice_enabled": true
-    },
-    "glearn": {
-      "enabled": true,
-      "path": "~/.glearn",
-      "cadence": "nightly"
-    }
-  },
-  "integration": {
-    "event_bus": "gbrain",
-    "shared_memory": true,
-    "cross_tool_sync": true
-  },
-  "agents": {
-    "claude_code": {
-      "mcp_enabled": true,
-      "skill_routing": true
-    },
-    "cursor": {
-      "mcp_enabled": false
-    }
-  }
-}
-```
+| Variable | Purpose |
+| --- | --- |
+| `GAGENT_DB_PATH` | Override the SQLite database path. |
+| `GAGENT_AUDIT_DIR` | Override JSONL audit output directory. |
+| `GAGENT_METRICS_PATH` | Override persisted local metrics path. |
+| `GAGENT_HEALTH_WEBHOOK_URL` | Send health-drop webhooks. |
+| `GAGENT_LLM_CALL_RESERVE_USD` | Per-call budget reservation. |
+| `GAGENT_BUDGET_RESERVATION_TTL_MS` | Reservation expiration window. |
+| `RECEIPT_SIGNATURE_KEY` | HMAC key for signed receipts. |
+| `GBRAIN_ENDPOINT`, `GSTACK_ENDPOINT`, `GORCHESTRATOR_ENDPOINT` | Stack service endpoints. |
+| `GMIRROR_ENDPOINT`, `GTOM_ENDPOINT`, `GLEARN_ENDPOINT` | Stack service endpoints. |
 
-## Data Flow
+## Documentation
 
-```
-1. Task Enters (gagent run)
-   ↓
-2. GBrain primed (context lookup)
-   ↓
-3. GOrchestrator dispatches N attempts
-   ↓
-4. Each attempt runs through GStack skills
-   ↓
-5. GMirror tests outputs (synthetic users)
-   ↓
-6. GToM validates authenticity
-   ↓
-7. Winner selected, written to GBrain
-   ↓
-8. GLearn captures pattern (async)
-```
+| Document | Scope |
+| --- | --- |
+| [API overview](docs/API.md) | Public CLI, MCP, and TypeScript surfaces. |
+| [Generated API docs](docs/api/index.html) | TypeDoc output generated by `npm run docs:api`. |
+| [MCP contract](docs/MCP_CONTRACT.md) | Tool schemas, scopes, and compatibility rules. |
+| [Evaluation baseline](docs/EVAL_BASELINE.md) | Quality corpus, statistics, and acceptance thresholds. |
+| [Runbook](docs/runbook.md) | Operator workflows and routine maintenance. |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Known failure modes and fixes. |
+| [Security model](docs/SECURITY_MODEL.md) | Trust boundaries, secret handling, and audit posture. |
+| [Data flow](docs/DATA_FLOW.md) | Mermaid architecture and persistence flow. |
+| [Integration guide](docs/INTEGRATION.md) | Embedding GAgent in projects and agent clients. |
+| [Migrations](MIGRATIONS.md) | Schema and state migration process. |
+| [Operations](OPERATIONS.md) | Deployment and release operations. |
+| [Testing](TESTING.md) | Test layers and quality gates. |
+| [ADR 0001](docs/adr/0001-unified-agent-control-plane.md) | Control-plane architecture decision. |
 
-## Installation Detection
+## Verification
 
-`gagent init` probes for existing installs:
+Before pushing a change, run:
 
 ```bash
-# GBrain
-test -d ~/.gbrain && test -f ~/.bun/bin/gbrain
-
-# GStack
-test -d ~/.claude/skills/gstack
-
-# Others (not yet built)
-test -d ~/.gorchestrator/bin/gorchestrator || echo "needs build"
+npm run verify
+git diff --check
 ```
 
-Auto-links discovered tools, prompts to build missing ones.
-
-## Development
-
-### Adding a New Tool
-
-1. Create tool wrapper in `src/tools/<name>.ts`
-2. Add config schema to `src/config/schema.ts`
-3. Register commands in `src/cli/router.ts`
-4. Add MCP tools to `src/mcp/server.ts`
-
-### Testing
-
-```bash
-gagent test --integration    # Full stack integration
-gagent test --unit           # Unit tests only
-gagent test --e2e            # End-to-end pipeline
-```
+`npm run verify` executes package contract checks, documentation checks, privacy scans,
+test-isolation checks, MCP contract checks, TypeScript typechecking, and Jest.
 
 ## License
 
-MIT — same as GBrain and GStack
+MIT

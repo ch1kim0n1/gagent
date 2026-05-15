@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Eval command with --cycles N support for statistical comparison
 - Stats and drift CLI commands
 - Comprehensive documentation (runbook, contract, eval)
+- Production documentation set covering API usage, MCP contracts, migrations, runbooks,
+  troubleshooting, security model, data flow, integration, ADRs, and generated TypeDoc API output.
+- `docs:api` script and TypeDoc configuration for regenerating `docs/api`.
 
 ### Changed
 - Improved pipeline orchestration

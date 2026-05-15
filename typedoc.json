@@ -1,0 +1,21 @@
+{
+  "entryPoints": [
+    "src/pipeline/orchestrator.ts",
+    "src/core/gagent-persistence.ts",
+    "src/core/receipt-registry.ts",
+    "src/core/budget-ledger.ts",
+    "src/core/observability.ts",
+    "src/tools/registry.ts",
+    "src/config/manager.ts",
+    "src/mcp/server.ts",
+    "src/types/index.ts"
+  ],
+  "out": "docs/api",
+  "readme": "docs/API.md",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "hideGenerator": true,
+  "navigationLinks": {
+    "Repository": "https://github.com/ch1kim0n1/gagent"
+  }
+}

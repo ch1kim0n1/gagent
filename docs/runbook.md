@@ -1,206 +1,68 @@
 # GAgent Runbook
 
-## Overview
-GAgent is an orchestration pipeline that executes tasks through the G-Stack with parallel attempts, verification, and cognitive checks.
+## Daily Checks
 
-## Quick Start
-
-### Installation
 ```bash
-cd gagent
-npm install
+npm run verify
+node dist/cli.js health
+node dist/cli.js metrics --format prometheus
+node dist/cli.js cost
+```
+
+Review health score, recent failed receipts, budget reservations, and GBrain circuit-breaker state.
+
+## Start MCP Server
+
+```bash
 npm run build
+node dist/cli.js serve
 ```
 
-### Basic Usage
+Confirm the client can list MCP tools and call `gagent_health`.
+
+## Run A Task
+
 ```bash
-# Run a task
-gagent run "Implement a REST API endpoint"
-
-# Run with verification
-gagent run "Fix the bug" --verify
-
-# Run full pipeline
-gagent run "Add feature" --full
+node dist/cli.js run "update the package metadata" --parallel 3 --verify --budget 1
 ```
 
-## Operations
+Expected result:
 
-### Task Execution
-**Command:** `gagent run <task> [options]`
+- At least one attempt succeeds.
+- A winner is selected.
+- A receipt is appended.
+- Cost is committed to the budget ledger.
+- Metrics and decision audit entries are written.
 
-**Purpose:** Execute a task through the GAgent pipeline.
+## Backup And Restore
 
-**Parameters:**
-- `--parallel N`: Number of parallel attempts (default: 1)
-- `--verify`: Run GMirror verification
-- `--cognitive-check`: Run GToM authenticity check
-- `--learn`: Capture to GLearn
-- `--full`: Run full pipeline (parallel + verify + check + learn)
-- `--dry-run`: Simulate without execution
-
-**Example:**
 ```bash
-gagent run "Implement user authentication" --parallel 3 --verify --cognitive-check
+node dist/cli.js backup ./backups/gagent-$(date +%Y%m%d)
+node dist/cli.js restore ./backups/gagent-20260515
 ```
 
-**Output Schema:**
-```json
-{
-  "status": "completed|failed",
-  "winner": {
-    "attempt_id": "string",
-    "result": "object"
-  },
-  "attempts": [
-    {
-      "attempt_id": "string",
-      "status": "success|failed",
-      "result": "object"
-    }
-  ],
-  "verification": {
-    "gmirror": "pass|fail",
-    "gtom": "pass|fail"
-  }
-}
-```
+Run `health` and `receipts` after restore to verify state continuity.
 
-### Health Check
-**Command:** `gagent health`
+## Release Checklist
 
-**Purpose:** Check health of all tools in the stack.
+1. `npm run verify`
+2. `npm run build`
+3. `npm run docs:api`
+4. `git diff --check`
+5. Confirm `CHANGELOG.md`, `README.md`, and generated API docs describe the shipped behavior.
+6. Push to `master`.
 
-**Output:**
-```
-GAgent Health Check
-Status: healthy
-Components:
-  Tool Registry: ✓
-  GOrchestrator: ✓
-  GStack: ✓
-  GMirror: ✓
-  GToM: ✓
-  GLearn: ✓
-```
+## Incident Response
 
-### Evaluation Mode
-**Command:** `gagent eval [options]`
+| Symptom | Action |
+| --- | --- |
+| Health score below 80 | Inspect failed services, endpoint env vars, and network reachability. |
+| Budget reservations stuck | Run `gagent cost`, wait for TTL, then inspect budget ledger state. |
+| GBrain writes skipped | Check circuit-breaker logs and `GBRAIN_ENDPOINT`. |
+| Receipts missing | Check receipt directory permissions and `RECEIPT_SIGNATURE_KEY` errors. |
+| MCP client cannot call write tools | Verify host auth wrapper grants write scope. |
 
-**Purpose:** Run evaluation on pipeline performance.
+## Operational Logs
 
-**Parameters:**
-- `-c, --corpus`: Path to test corpus JSON
-- `--cycles N`: Number of cycles for statistical comparison (default: 1)
-- `-o, --output`: Write output to file
-
-### Statistics
-**Command:** `gagent stats`
-
-**Purpose:** Show statistics from recent pipeline runs.
-
-### Drift Detection
-**Command:** `gagent drift`
-
-**Purpose:** Check for performance drift over time.
-
-## Troubleshooting
-
-### No Winner Selected
-**Symptom:** Pipeline completes but no winner is selected
-
-**Solution:**
-- Check if all attempts failed
-- Review attempt results for errors
-- Increase parallel attempts for better chances
-
-### Verification Failures
-**Symptom:** Execution succeeds but verification fails
-
-**Solution:**
-- Review GMirror failure modes
-- Check GToM authenticity issues
-- Adjust task prompt for better alignment
-
-### High Latency
-**Symptom:** Pipeline takes > 60 seconds
-
-**Solution:**
-- Reduce parallel attempts
-- Skip verification for non-critical tasks
-- Check individual tool latencies
-
-## Configuration
-
-### Pipeline Options
-```json
-{
-  "task": "string",
-  "parallel": 1,
-  "verify": false,
-  "cognitiveCheck": false,
-  "learn": false,
-  "dryRun": false
-}
-```
-
-### Tool Registry
-GAgent uses a tool registry to manage available tools:
-- GOrchestrator: Code execution
-- GStack: Code review
-- GMirror: UX verification
-- GToM: Authenticity check
-- GLearn: Pattern learning
-
-## Integration Points
-
-### GOrchestrator
-- Primary execution engine for code tasks
-- Handles attempt orchestration
-
-### GStack
-- Provides code review for each attempt
-- Used for quality assessment
-
-### GMirror
-- Verifies UX quality of generated code
-- Used in verification phase
-
-### GToM
-- Checks for authenticity and manipulation
-- Used in cognitive check phase
-
-### GLearn
-- Captures patterns from execution
-- Used for continuous improvement
-
-### GAgent MCP
-- Exposes run, health, brain search, stack review operations
-- Primary interface for external agents
-
-## Monitoring
-
-### Key Metrics
-- Pipeline success rate
-- Average execution time
-- Verification pass rate
-- Cost per execution
-
-### Alerting Thresholds
-- Success rate < 80%: Review tool configuration
-- Execution time > 120s: Optimize parallel attempts
-- Verification pass rate < 50%: Adjust verification thresholds
-
-## Maintenance
-
-### Daily
-- Review pipeline success rates
-- Check tool health status
-
-### Weekly
-- Run evaluation corpus
-- Review cost and latency trends
-
-### Monthly
-- Update tool configurations
-- Expand tool registry with new capabilities
+Audit logs are JSONL. They should be shipped to centralized logging in production, with the local
+copy retained long enough to debug receipt and budget disputes.
