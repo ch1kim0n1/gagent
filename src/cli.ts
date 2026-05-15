@@ -111,7 +111,9 @@ program
   .option('--learn', 'Capture to GLearn')
   .option('--full', 'Run full pipeline (parallel + verify + check + learn)')
   .option('--dry-run', 'Show what would be done without executing')
+  .option('--cycles <n>', 'Number of cycles to run', '1')
   .option('--budget-usd <amount>', 'Maximum budget in USD for this run')
+  .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (task, options) => {
     // Basic input validation
@@ -135,6 +137,11 @@ program
       console.error(chalk.red('Error: Parallel must be a number between 1 and 100'));
       process.exit(1);
     }
+    const cycles = parseInt(options.cycles);
+    if (isNaN(cycles) || cycles < 1 || cycles > 100) {
+      console.error(chalk.red('Error: Cycles must be between 1 and 100'));
+      process.exit(1);
+    }
 
     // Budget validation
     if (options.budgetUsd !== undefined) {
@@ -152,7 +159,8 @@ program
       cognitiveCheck: options.cognitiveCheck || options.full,
       learn: options.learn || options.full,
       dryRun: options.dryRun,
-      budgetUsd: options.budgetUsd ? parseFloat(options.budgetUsd) : undefined
+      budgetUsd: options.budgetUsd ? parseFloat(options.budgetUsd) : undefined,
+      cycles
     };
     
     if (runOptions.dryRun) {
@@ -169,7 +177,18 @@ program
     if (!options.quiet) {
       console.log('');
     }
-    const result = await pipeline.execute(runOptions);
+    const results = [];
+    for (let cycle = 0; cycle < cycles; cycle++) {
+      if (cycles > 1 && !options.quiet) {
+        console.log(chalk.gray(`Cycle ${cycle + 1}/${cycles}`));
+      }
+      results.push(await pipeline.execute({ ...runOptions, cycles: 1 }));
+    }
+    const result = results[results.length - 1];
+    if (options.json) {
+      console.log(JSON.stringify(cycles === 1 ? result : { cycles, results }, null, 2));
+      return;
+    }
     
     if (!options.quiet) {
       console.log('');
@@ -187,12 +206,17 @@ program
 program
   .command('sync')
   .description('Sync state across all tools')
+  .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     if (!options.quiet) {
       console.log(chalk.blue('Syncing all tools...'));
     }
     await registry.syncAll();
+    if (options.json) {
+      console.log(JSON.stringify({ status: 'synced', timestamp: new Date().toISOString() }, null, 2));
+      return;
+    }
     if (!options.quiet) {
       console.log(chalk.green('Sync complete'));
     }
@@ -203,21 +227,33 @@ program
   .description('View or edit configuration')
   .option('--get <key>', 'Get config value')
   .option('--set <key> <value>', 'Set config value')
+  .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     if (options.get) {
       const value = config.get(options.get);
-      console.log(value);
+      if (options.json) {
+        console.log(JSON.stringify({ key: options.get, value }, null, 2));
+      } else if (!options.quiet) {
+        console.log(value);
+      }
     } else if (options.set) {
       // Parse value as JSON if possible
       let parsed = options.set[1];
       try { parsed = JSON.parse(parsed); } catch {}
       await config.set(options.set[0], parsed);
+      if (options.json) {
+        console.log(JSON.stringify({ updated: options.set[0], value: parsed }, null, 2));
+        return;
+      }
       if (!options.quiet) {
         console.log(chalk.green('Config updated'));
       }
-    } else {
+    } else if (options.json) {
+      console.log(JSON.stringify(config.getRaw(), null, 2));
+    } else if (!options.quiet) {
       console.log(config.view());
+    } else {
     }
   });
 
@@ -225,8 +261,12 @@ program
   .command('serve')
   .description('Start MCP server for Claude Code integration')
   .option('--port <port>', 'HTTP port (default: stdio)')
+  .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    if (options.json) {
+      console.log(JSON.stringify({ status: 'starting', port: options.port || 'stdio' }, null, 2));
+    }
     if (!options.quiet) {
       console.log(chalk.blue('Starting GAgent MCP server...'));
     }
@@ -405,6 +445,8 @@ program
   .option('--dry-run', 'Show what would be done without executing')
   .option('--cycles <n>', 'Number of cycles to run (for statistical comparison)', '1')
   .option('--budget-usd <amount>', 'Maximum budget in USD', '10')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (id, options) => {
     // Check if ID looks like a hash (64 hex chars) or receipt ID
     const isHash = /^[a-f0-9]{64}$/i.test(id);
@@ -520,6 +562,7 @@ program
   .option('--until <date>', 'Only include receipts up to YYYY-MM-DD')
   .option('--limit <n>', 'Maximum number of receipts to print', '50')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
       const { ReceiptRegistry } = await import('./core/receipt-registry.js');
@@ -540,7 +583,7 @@ program
       const receipts = (await receiptRegistry.getAllBetween(start, end)).slice(-limit);
       if (options.json) {
         console.log(JSON.stringify(receipts, null, 2));
-      } else {
+      } else if (!options.quiet) {
         for (const receipt of receipts) {
           console.log(`${receipt.timestamp} ${receipt.receipt_id} ${receipt.verdict} score=${receipt.overall_score.toFixed(3)} corpus=${receipt.metadata?.corpus_sha8 || receipt.input_hash.substring(0, 8)}`);
         }
@@ -556,6 +599,7 @@ program
   .command('diff <receiptA> <receiptB>')
   .description('Diff two execution receipts')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (receiptA, receiptB, options) => {
     try {
       const { ReceiptRegistry } = await import('./core/receipt-registry.js');
@@ -570,7 +614,7 @@ program
       const diff = receiptRegistry.diff(a, b);
       if (options.json) {
         console.log(JSON.stringify(diff, null, 2));
-      } else {
+      } else if (!options.quiet) {
         console.log(chalk.blue('[GAgent] Receipt Diff'));
         console.log(`  Verdict: ${diff.verdict.from} -> ${diff.verdict.to}`);
         console.log(`  Overall score: ${diff.overall_score.from} -> ${diff.overall_score.to} (${diff.overall_score.delta >= 0 ? '+' : ''}${diff.overall_score.delta.toFixed(3)})`);
@@ -620,6 +664,51 @@ program
   });
 
 program
+  .command('models')
+  .description('Show configured model tiers')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((options) => {
+    const models = {
+      tier1: config.get('models.tier1') || process.env.GAGENT_TIER1_MODEL || 'claude-haiku-4-5-20251001',
+      tier2: config.get('models.tier2') || process.env.GAGENT_TIER2_MODEL || 'claude-sonnet-4-6',
+      tier3: config.get('models.tier3') || process.env.GAGENT_TIER3_MODEL || 'gpt-4o',
+      default_tier: config.get('models.default_tier') || 'tier1',
+    };
+    if (options.json) {
+      console.log(JSON.stringify(models, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.blue('[GAgent] Model Tiers'));
+      for (const [tier, model] of Object.entries(models)) {
+        console.log(`  ${tier}: ${model}`);
+      }
+    }
+  });
+
+program
+  .command('tier')
+  .description('View or update the default model tier')
+  .option('--set <tier>', 'Set default tier (tier1, tier2, tier3)')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const validTiers = ['tier1', 'tier2', 'tier3'];
+    if (options.set) {
+      if (!validTiers.includes(options.set)) {
+        console.error(chalk.red('[GAgent] --set must be one of: tier1, tier2, tier3'));
+        process.exit(1);
+      }
+      await config.set('models.default_tier', options.set);
+    }
+    const current = config.get('models.default_tier') || 'tier1';
+    if (options.json) {
+      console.log(JSON.stringify({ default_tier: current }, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.blue(`[GAgent] Default tier: ${current}`));
+    }
+  });
+
+program
   .command('cost')
   .description('View LLM spend and cost tracking')
   .option('--day', 'Show today\'s spend (default)')
@@ -628,6 +717,7 @@ program
   .option('--by-model', 'Break down by model')
   .option('--by-operation', 'Break down by operation')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
       const { BudgetLedger } = await import('./core/budget-ledger.js');
@@ -652,7 +742,7 @@ program
           breakdown['by_operation'] = ledger.getSpendByOperation();
         }
         console.log(JSON.stringify({ spend, ...breakdown }, null, 2));
-      } else {
+      } else if (!options.quiet) {
         const period = options.week ? 'this week' : options.month ? 'this month' : 'today';
         console.log(chalk.blue(`LLM Spend ${period}: $${spend.toFixed(4)}`));
         
@@ -873,6 +963,26 @@ program
     }
   });
 
+program
+  .command('completion')
+  .description('Print shell completion script')
+  .argument('[shell]', 'Shell type: bash, zsh, or fish', 'bash')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((shell, options) => {
+    const normalized = String(shell).toLowerCase();
+    const script = buildCompletionScript(normalized);
+    if (!script) {
+      console.error(chalk.red('[GAgent] Shell must be one of: bash, zsh, fish'));
+      process.exit(1);
+    }
+    if (options.json) {
+      console.log(JSON.stringify({ shell: normalized, script }, null, 2));
+    } else if (!options.quiet) {
+      console.log(script);
+    }
+  });
+
 function calculateStdDev(values: number[]): number {
   if (values.length === 0) return 0;
   const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
@@ -924,6 +1034,81 @@ async function runReceiptRegression(against: string | undefined, options: any): 
   }
 
   process.exit(regressionPassed ? 0 : 1);
+}
+
+function buildCompletionScript(shell: string): string | null {
+  const commands = [
+    'init',
+    'health',
+    'run',
+    'sync',
+    'config',
+    'serve',
+    'brain',
+    'stack',
+    'orc',
+    'mirror',
+    'tom',
+    'learn',
+    'run-parallel',
+    'run-verified',
+    'run-safe',
+    'run-smart',
+    'eval',
+    'replay',
+    'receipts',
+    'diff',
+    'registry',
+    'models',
+    'tier',
+    'cost',
+    'trend',
+    'regress',
+    'drift',
+    'completion',
+  ];
+  const options = [
+    '--help',
+    '--version',
+    '--json',
+    '--quiet',
+    '--cycles',
+    '--budget-usd',
+    '--parallel',
+    '--verify',
+    '--cognitive-check',
+    '--learn',
+    '--full',
+    '--dry-run',
+    '--corpus',
+    '--against',
+  ];
+  const words = [...commands, ...options].join(' ');
+
+  if (shell === 'bash') {
+    return `_gagent_completions()
+{
+  local cur
+  COMPREPLY=()
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=( $(compgen -W "${words}" -- "$cur") )
+}
+complete -F _gagent_completions gagent`;
+  }
+
+  if (shell === 'zsh') {
+    return `#compdef gagent
+_arguments '1:command:(${commands.join(' ')})' '*::option:(${options.join(' ')})'`;
+  }
+
+  if (shell === 'fish') {
+    return [
+      ...commands.map(command => `complete -c gagent -f -a ${command}`),
+      ...options.map(option => `complete -c gagent -f -l ${option.slice(2)}`),
+    ].join('\n');
+  }
+
+  return null;
 }
 
 program.parse();
