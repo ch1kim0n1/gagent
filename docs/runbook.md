@@ -58,7 +58,7 @@ Run `health` and `receipts` after restore to verify state continuity.
 | --- | --- |
 | Health score below 80 | Inspect failed services, endpoint env vars, and network reachability. |
 | Budget reservations stuck | Run `gagent cost`, wait for TTL, then inspect budget ledger state. |
-| GBrain writes skipped | Check circuit-breaker logs and `GBRAIN_ENDPOINT`. |
+| GBrain writes skipped | Check circuit-breaker logs, `GBRAIN_ENDPOINT`, `GBRAIN_AUTH_TOKEN`, and MCP transport settings. |
 | Receipts missing | Check receipt directory permissions and `RECEIPT_SIGNATURE_KEY` errors. |
 | MCP client cannot call write tools | Verify host auth wrapper grants write scope. |
 

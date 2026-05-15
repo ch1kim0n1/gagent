@@ -8,11 +8,7 @@ import {
 import { ToolRegistry } from '../tools/registry.js';
 import { GAgentConfig } from '../config/manager.js';
 import { Pipeline } from '../pipeline/orchestrator.js';
-import {
-  GBrainClient,
-  GBrainClientConfig,
-  GBrainClientError,
-} from '../../../shared/src/core/gbrain-client.js';
+import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
 import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
 import { LocalLogger, type LogLevel } from '../core/observability.js';
 
@@ -35,10 +31,8 @@ export async function startMcpServer(
   const pipeline = new Pipeline(registry, config);
   
   const gbrainEndpoint = process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
-  const gbrainClient = new GBrainClient({
-    baseUrl: gbrainEndpoint,
-    timeoutMs: 30000,
-    maxRetries: 3,
+  const gbrainClient = new GBrainIntegrationClient({
+    endpoint: gbrainEndpoint,
   });
 
   // Initialize authentication middleware
@@ -329,7 +323,7 @@ export async function startMcpServer(
           }
 
           try {
-            const response = await gbrainClient.restClient.searchPages(args.query as string);
+            const response = await gbrainClient.searchContext(args.query as string);
             return {
               content: [
                 {

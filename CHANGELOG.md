@@ -14,10 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Production documentation set covering API usage, MCP contracts, migrations, runbooks,
   troubleshooting, security model, data flow, integration, ADRs, and generated TypeDoc API output.
 - `docs:api` script and TypeDoc configuration for regenerating `docs/api`.
+- Typed GBrain integration client for context search, pipeline memory writes, receipt mirroring,
+  and daily tool-status pages with HTTP/MCP transports, auth, timeouts, retries, circuit breaker,
+  and response validation.
 
 ### Changed
 - Improved pipeline orchestration
 - Enhanced tool registry management
+- GAgent now primes execution with GBrain context through the typed client and degrades gracefully
+  when GBrain is unavailable.
 
 ## [0.1.0] - 2026-05-13
 

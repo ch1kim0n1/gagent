@@ -20,10 +20,9 @@ import {
 } from '../core/llm-client.js';
 import { BudgetLedger } from '../core/budget-ledger.js';
 import {
-  GBrainClient,
-  GBrainClientConfig,
-  GBrainClientError,
-} from '../../../shared/src/core/gbrain-client.js';
+  GBrainIntegrationClient,
+  GBrainIntegrationConfig,
+} from '../core/gbrain-integration.js';
 import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
@@ -109,11 +108,7 @@ export class Pipeline {
   private tierConfigs: Map<string, TierConfig>;
   private escalationMetrics: EscalationMetrics;
   private llmClient: LLMClient;
-  private gbrainClient: GBrainClient;
-  private gbrainCircuitOpen: boolean = false;
-  private gbrainCircuitOpenUntil: number = 0;
-  private readonly CIRCUIT_BREAKER_THRESHOLD = 5;
-  private readonly CIRCUIT_BREAKER_TIMEOUT_MS = 60000;
+  private gbrainClient: GBrainIntegrationClient;
   private driftDetector: DriftDetector;
   private budgetLedger: BudgetLedger;
   private budgetLedgerReady: Promise<void>;
@@ -129,7 +124,7 @@ export class Pipeline {
   private glearnEndpoint: string;
   private lastConsensusSummary?: ConsensusSummary;
 
-  constructor(registry: ToolRegistry, config: GAgentConfig, multiModelConfig?: MultiModelConfig, llmConfig?: LLMClientConfig, gbrainConfig?: GBrainClientConfig) {
+  constructor(registry: ToolRegistry, config: GAgentConfig, multiModelConfig?: MultiModelConfig, llmConfig?: LLMClientConfig, gbrainConfig?: GBrainIntegrationConfig) {
     this.registry = registry;
     this.config = config;
     this.receiptRegistry = new ReceiptRegistry('gagent');
@@ -142,10 +137,8 @@ export class Pipeline {
     this.gtomEndpoint = process.env.GTOM_ENDPOINT || 'http://localhost:3004';
     this.glearnEndpoint = process.env.GLEARN_ENDPOINT || 'http://localhost:3005';
     
-    this.gbrainClient = new GBrainClient({
-      baseUrl: this.gbrainEndpoint,
-      timeoutMs: 30000,
-      maxRetries: 3,
+    this.gbrainClient = new GBrainIntegrationClient({
+      endpoint: this.gbrainEndpoint,
       ...gbrainConfig,
     });
 
@@ -685,20 +678,14 @@ Return a JSON object with the decision, e.g.:
     if (!this.config.isToolEnabled('gbrain')) {
       return null;
     }
-    
-    if (this.isGbrainCircuitOpen()) {
-      logger.warn('GBrain circuit breaker is open, skipping primeBrain');
-      return null;
-    }
-    
+
     try {
-      const response = await this.gbrainClient.restClient.searchPages(task);
-      return response;
+      return await this.gbrainClient.searchContext(task);
     } catch (error) {
-      if (error instanceof GBrainClientError) {
-        this.handleGbrainError(error);
-        logger.error('GBrain search failed', error);
-      }
+      logger.warn('GBrain context lookup unavailable; continuing without primed context', {
+        error: error instanceof Error ? error.message : String(error),
+        circuit: this.gbrainClient.getCircuitState(),
+      });
       return null;
     }
   }
@@ -1066,12 +1053,7 @@ Return this JSON shape:
     if (!this.config.isToolEnabled('gbrain')) {
       return;
     }
-    
-    if (this.isGbrainCircuitOpen()) {
-      logger.warn('GBrain circuit breaker is open, skipping recordToBrain');
-      return;
-    }
-    
+
     try {
       const record = {
         task,
@@ -1080,18 +1062,16 @@ Return this JSON shape:
         timestamp: new Date().toISOString()
       };
       
-      await this.gbrainClient.restClient.createPage({
+      await this.gbrainClient.createPage({
         title: `Pipeline: ${task}`,
         content: JSON.stringify(record, null, 2),
         tags: ['gagent', 'pipeline'],
       });
-      
-      this.resetGbrainCircuit();
     } catch (error) {
-      if (error instanceof GBrainClientError) {
-        this.handleGbrainError(error);
-        logger.error('GBrain page creation failed', error);
-      }
+      logger.warn('Failed to write pipeline record to GBrain; continuing without remote memory write', {
+        error: error instanceof Error ? error.message : String(error),
+        circuit: this.gbrainClient.getCircuitState(),
+      });
     }
   }
 
@@ -1174,68 +1154,18 @@ Return this JSON shape:
       return;
     }
 
-    if (this.isGbrainCircuitOpen()) {
-      logger.warn('GBrain circuit breaker is open, skipping storeReceiptInGBrain');
-      return;
-    }
-
     try {
-      // Store the receipt as a page with structured metadata
-      await this.gbrainClient.restClient.createPage({
+      await this.gbrainClient.createPage({
         title: `Receipt: ${receipt.receipt_id}`,
         content: JSON.stringify(receipt, null, 2),
         tags: ['gagent', 'receipt', receipt.verdict],
       });
-      
-      this.resetGbrainCircuit();
     } catch (error) {
-      if (error instanceof GBrainClientError) {
-        this.handleGbrainError(error);
-        logger.error('Failed to store receipt in gbrain', error);
-      }
-      // Log error but don't fail the pipeline if gbrain storage fails
-    }
-  }
-
-  /**
-   * Circuit breaker: Check if GBrain circuit is open
-   */
-  private isGbrainCircuitOpen(): boolean {
-    if (this.gbrainCircuitOpen) {
-      if (Date.now() > this.gbrainCircuitOpenUntil) {
-        this.gbrainCircuitOpen = false;
-        return false;
-      }
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Circuit breaker: Handle GBrain errors
-   */
-  private handleGbrainError(error: GBrainClientError): void {
-    if (!error.retryable) {
-      return;
-    }
-    
-    // Track consecutive failures (simplified - in production use a proper counter)
-    if (error.kind === 'timeout' || error.kind === 'network' || error.kind === 'server_error') {
-      this.gbrainCircuitOpen = true;
-      this.gbrainCircuitOpenUntil = Date.now() + this.CIRCUIT_BREAKER_TIMEOUT_MS;
-      logger.warn('GBrain circuit breaker opened', { 
-        errorKind: error.kind, 
-        openUntil: new Date(this.gbrainCircuitOpenUntil).toISOString() 
+      logger.warn('Failed to store receipt in GBrain; continuing without remote receipt mirror', {
+        error: error instanceof Error ? error.message : String(error),
+        circuit: this.gbrainClient.getCircuitState(),
       });
     }
-  }
-
-  /**
-   * Circuit breaker: Reset circuit on success
-   */
-  private resetGbrainCircuit(): void {
-    this.gbrainCircuitOpen = false;
-    this.gbrainCircuitOpenUntil = 0;
   }
 
   /**
@@ -1288,23 +1218,22 @@ Return this JSON shape:
     // Check gbrain
     const gbrainStart = performance.now();
     try {
-      const response = await fetch(`${this.gbrainEndpoint}/health`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(5000),
-      });
+      const response = await this.gbrainClient.healthCheck();
+      const healthy = response.ok === true || response.status === 'healthy' || response.status === 'ok';
       results.push({
         service: 'gbrain',
-        healthy: response.ok,
+        healthy,
         latency_ms: performance.now() - gbrainStart,
-        error: response.ok ? undefined : `HTTP ${response.status}`,
+        error: healthy ? undefined : `status=${response.status ?? 'unknown'}`,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
+      const circuit = this.gbrainClient.getCircuitState();
       results.push({
         service: 'gbrain',
         healthy: false,
         latency_ms: performance.now() - gbrainStart,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: `${error instanceof Error ? error.message : 'Unknown error'} circuit_open=${circuit.open}`,
         timestamp: new Date().toISOString(),
       });
     }
@@ -1462,6 +1391,7 @@ Return this JSON shape:
       this.observability.metrics.observe('gagent_health_check_latency_ms', result.latency_ms, { service: result.service });
       if (!result.healthy) this.observability.metrics.increment('gagent_health_check_errors_total', { service: result.service });
     }
+    await this.publishDailyToolStatus(results);
     await this.observability.alertOnHealthDrop(healthScore, results);
     this.observability.tracer.endSpan(span);
     return results;
@@ -1478,6 +1408,32 @@ Return this JSON shape:
     if (results.length === 0) return 0;
     const healthy = results.filter(result => result.healthy).length;
     return Math.round((healthy / results.length) * 100);
+  }
+
+  private async publishDailyToolStatus(results: HealthCheckResult[]): Promise<void> {
+    if (!this.config.isToolEnabled('gbrain')) {
+      return;
+    }
+
+    try {
+      await this.gbrainClient.publishDailyToolStatus({
+        status: Object.fromEntries(results.map(result => [
+          result.service,
+          {
+            installed: true,
+            healthy: result.healthy,
+            latency_ms: result.latency_ms,
+            message: result.error,
+            score: result.healthy ? 100 : 0,
+          },
+        ])),
+      });
+    } catch (error) {
+      logger.warn('Failed to publish daily tool status to GBrain', {
+        error: error instanceof Error ? error.message : String(error),
+        circuit: this.gbrainClient.getCircuitState(),
+      });
+    }
   }
 
   /**

@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { GAgentConfig } from '../config/manager.js';
 import { ReceiptRegistry } from '../core/receipt-registry.js';
+import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
 
 interface ToolInfo {
   installed: boolean;
@@ -190,6 +191,8 @@ export class ToolRegistry {
     for (const info of Object.values(detected)) {
       info.score = this.calculateHealthScore(info);
     }
+
+    await this.publishDailyToolStatus(detected);
     
     return detected;
   }
@@ -373,6 +376,21 @@ export class ToolRegistry {
     if (info.latency_ms !== undefined) score += info.latency_ms < 500 ? 15 : info.latency_ms < 2000 ? 8 : 0;
     if (!info.message || /available|matches|0 eval_capture|pass rate|ping|healthy/i.test(info.message)) score += 10;
     return Math.max(0, Math.min(100, score));
+  }
+
+  private async publishDailyToolStatus(detected: Record<string, ToolInfo>): Promise<void> {
+    if (!this.config.isToolEnabled('gbrain')) {
+      return;
+    }
+
+    try {
+      const client = new GBrainIntegrationClient({
+        endpoint: this.getEndpoint('gbrain'),
+      });
+      await client.publishDailyToolStatus({ status: detected });
+    } catch {
+      // GBrain status publication is best-effort and must not fail health checks.
+    }
   }
 
   async runTool(name: string, args: string[], rawArgs: string[]): Promise<ToolResult> {
