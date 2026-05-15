@@ -14,6 +14,7 @@ module.exports = {
     '^.+\\.ts$': 'ts-jest',
   },
   moduleNameMapper: {
+    '^bun:test$': '<rootDir>/test/bun-test-shim.ts',
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
 };

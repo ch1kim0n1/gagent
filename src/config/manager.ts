@@ -42,15 +42,10 @@ export class GAgentConfig {
       'gagent',
       {
         statePath: this.configPath.replace('.json', '-state.json'),
-        autoSave: true,
-        saveInterval: 30000, // Save every 30 seconds
-      }
+        autoSave: false,
+        useSQLite: false,
+      } as any
     );
-    
-    // Initialize persistence (async, don't await in constructor)
-    this.persistenceManager.init().catch(error => {
-      console.error('[GAgentConfig] Failed to initialize persistence:', error);
-    });
   }
 
   private load(): GAgentConfigType {

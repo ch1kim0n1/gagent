@@ -43,9 +43,9 @@ async function main() {
     await healthServer.start();
     await startMcpServer(registry, config);
   } catch (error) {
-    logger.error('Failed to start GAgent', { error: error instanceof Error ? error.message : String(error) });
+    logger.error('Failed to start GAgent', error instanceof Error ? error : new Error(String(error)));
     process.exit(1);
   }
 }
 
-main().catch((error) => logger.error('Main function error', { error: error instanceof Error ? error.message : String(error) }));
+main().catch((error) => logger.error('Main function error', error instanceof Error ? error : new Error(String(error))));
