@@ -78,17 +78,18 @@ program
       let maxScore = 0;
       
       for (const [name, check] of Object.entries(health)) {
-        maxScore += 10;
+        maxScore += 100;
         const status = check.healthy 
           ? chalk.green('✓ healthy') 
           : check.installed 
             ? chalk.yellow('⚠ issues') 
             : chalk.red('✗ not installed');
         
-        if (check.healthy) score += 10;
-        else if (check.installed) score += 5;
+        score += check.score ?? (check.healthy ? 100 : check.installed ? 50 : 0);
         
-        console.log(`${name.padEnd(15)} ${status}`);
+        const latency = check.latency_ms !== undefined ? ` ${Math.round(check.latency_ms)}ms` : '';
+        const itemScore = check.score !== undefined ? ` score=${Math.round(check.score)}` : '';
+        console.log(`${name.padEnd(15)} ${status}${latency}${itemScore}`);
         if (check.message) {
           console.log(`  ${chalk.gray(check.message)}`);
         }
