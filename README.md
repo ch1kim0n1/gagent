@@ -1,3 +1,20 @@
+## Quickstart (60 seconds)
+
+```bash
+npm install gagent
+```
+
+```typescript
+import { AgentSDK } from 'gagent';
+const agent = new AgentSDK({ apiKey: process.env.ANTHROPIC_API_KEY });
+const result = await agent.execute('Write a hello world function in TypeScript');
+console.log(result.safe, result.output);
+```
+
+> No Docker. No services. Execute tasks safely with built-in PII protection and ethics guardrails.
+
+---
+
 # GAgent
 
 GAgent is the unified CLI, MCP server, and local control plane for the six-tool agent stack:

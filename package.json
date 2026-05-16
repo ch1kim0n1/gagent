@@ -7,16 +7,22 @@
   },
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/gagent/src/sdk.d.ts",
+      "import": "./dist/gagent/src/sdk.js",
+      "require": "./dist/gagent/src/sdk.js"
+    },
+    "./sdk": {
+      "types": "./dist/gagent/src/sdk.d.ts",
+      "import": "./dist/gagent/src/sdk.js",
+      "require": "./dist/gagent/src/sdk.js"
     },
     "./PIIRedactor": {
-      "import": "./dist/core/pii-redactor.js",
-      "types": "./dist/core/pii-redactor.d.ts"
+      "import": "./dist/gagent/src/core/pii-redactor.js",
+      "types": "./dist/gagent/src/core/pii-redactor.d.ts"
     },
     "./EthicalClassifier": {
-      "import": "./dist/core/ethical-refusal-classifier.js",
-      "types": "./dist/core/ethical-refusal-classifier.d.ts"
+      "import": "./dist/gagent/src/core/ethical-refusal-classifier.js",
+      "types": "./dist/gagent/src/core/ethical-refusal-classifier.d.ts"
     },
     "./pii": {
       "require": "./dist/gagent/src/core/pii-redactor.js",

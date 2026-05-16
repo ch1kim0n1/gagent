@@ -33,6 +33,7 @@ import { HealthCheckResult } from '@gstack/shared/health';
 import { GAgentObservability, LocalAuditLogger, LocalLogger, coreLogger } from '../core/observability.js';
 import { ProgressEvent, TaskBackpressureLimiter, TTLCache } from '../core/performance.js';
 import { DyadAnalysisHandler } from '../handlers/dyad-analysis-handler.js';
+import { PIIRedactor } from '../core/pii-redactor.js';
 
 const logger = coreLogger;
 
@@ -272,10 +273,15 @@ export class Pipeline {
     this.logger.info('Executing task directly via LLM (graceful degradation)', { task });
     
     try {
-      // Apply PII redaction (if available in gagent)
-      let sanitizedTask = task;
-      // TODO: Integrate PII redactor when available
-      
+      // Apply PII redaction before passing task to LLM
+      const redactor = new PIIRedactor({
+        redact_phone_numbers: true,
+        redact_names: false,
+        redact_locations: false,
+        hash_contact_ids: false,
+      });
+      const sanitizedTask = redactor.redactText(task);
+
       // Call LLM directly
       const llmResult = await this.callBudgetedLLM('direct_execution', sanitizedTask, {
         model: this.llmClient.getModelByTier('tier2'),
