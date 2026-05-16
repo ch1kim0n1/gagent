@@ -1,7 +1,8 @@
 import { spawn } from 'child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { GAgentConfig } from '../config/manager.js';
 import { ReceiptRegistry } from '../core/receipt-registry.js';
 import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
@@ -29,6 +30,66 @@ export interface RegisteredToolInfo {
   enabled: boolean;
   endpoint: string;
 }
+
+export type SyncMode = 'incremental' | 'full';
+
+export interface SyncOptions {
+  mode?: SyncMode;
+  dryRun?: boolean;
+  lockTimeoutMs?: number;
+}
+
+export interface SyncStageResult {
+  stage: string;
+  status: 'ok' | 'skipped' | 'error';
+  mode: SyncMode;
+  dry_run: boolean;
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  items_total: number;
+  items_changed: number;
+  details?: Record<string, any>;
+  error?: string;
+}
+
+export interface SyncResult {
+  status: 'ok' | 'partial' | 'error';
+  mode: SyncMode;
+  dry_run: boolean;
+  stages: SyncStageResult[];
+  state_path: string;
+  lock_path: string;
+  timestamp: string;
+}
+
+interface GStackGBrainSource {
+  tool: string;
+  id: string;
+  path: string;
+  pathhash8: string;
+  federated: boolean;
+  dotfile_path: string;
+  updated_at: string;
+}
+
+interface GStackGBrainSyncState {
+  version: 1;
+  updated_at: string;
+  mode: SyncMode;
+  sources: Record<string, GStackGBrainSource>;
+}
+
+const TOOL_SOURCE_NAMES = ['gbrain', 'gstack', 'gorchestrator', 'gmirror', 'gtom', 'glearn'] as const;
+const DEFAULT_TOOL_PATHS: Record<string, string> = {
+  gbrain: join(homedir(), '.gbrain'),
+  gstack: join(homedir(), '.claude', 'skills', 'gstack'),
+  gorchestrator: join(homedir(), '.gorchestrator'),
+  gmirror: join(homedir(), '.gmirror'),
+  gtom: join(homedir(), '.gtom'),
+  glearn: join(homedir(), '.glearn'),
+};
+const SYNC_LOCK_STALE_MS = 5 * 60 * 1000;
 
 export class ToolRegistry {
   private config: GAgentConfig;
@@ -419,27 +480,257 @@ export class ToolRegistry {
     });
   }
 
-  async syncAll(): Promise<void> {
-    // Sync GBrain (central memory)
-    if (this.config.isToolEnabled('gbrain')) {
+  async syncAll(options: SyncOptions = {}): Promise<SyncResult> {
+    return this.runGStackGBrainSync(options);
+  }
+
+  async runGStackGBrainSync(options: SyncOptions = {}): Promise<SyncResult> {
+    const mode = options.mode ?? 'incremental';
+    const dryRun = options.dryRun ?? false;
+    const syncRoot = this.getSyncRoot();
+    const statePath = join(syncRoot, 'gstack-gbrain-sync-state.json');
+    const lockPath = join(syncRoot, 'gstack-gbrain-sync.lock');
+    const stages: SyncStageResult[] = [];
+
+    if (!dryRun) {
       try {
-        await this.execSafe('gbrain', ['sync']);
-      } catch {
-        // Ignore errors
+        this.acquireSyncLock(lockPath, options.lockTimeoutMs ?? SYNC_LOCK_STALE_MS);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to acquire sync lock';
+        stages.push(this.makeStageResult('lock', mode, dryRun, Date.now(), 0, 0, 'error', undefined, message));
+        return {
+          status: 'error',
+          mode,
+          dry_run: dryRun,
+          stages,
+          state_path: statePath,
+          lock_path: lockPath,
+          timestamp: new Date().toISOString(),
+        };
       }
     }
-    
-    // Sync GStack learnings to GBrain
-    if (this.config.isToolEnabled('gstack') && this.config.isToolEnabled('gbrain')) {
-      try {
-        const home = process.env.HOME || process.env.USERPROFILE;
-        await this.execSafe('gbrain', ['sources', 'add', `${home}/.gstack`, '--strategy', 'memory']);
-      } catch {
-        // May already be added
+
+    try {
+      const previousState = this.readSyncState(statePath);
+      stages.push(await this.syncGBrainStage(mode, dryRun));
+      const toolsStage = await this.syncToolsStage(mode, dryRun, statePath, previousState);
+      stages.push(toolsStage);
+
+      if (!dryRun && toolsStage.status !== 'error') {
+        this.writeSyncStateAtomic(statePath, {
+          version: 1,
+          updated_at: new Date().toISOString(),
+          mode,
+          sources: Object.fromEntries((toolsStage.details?.sources ?? []).map((source: GStackGBrainSource) => [source.tool, source])),
+        });
+      }
+
+      const status = stages.some(stage => stage.status === 'error')
+        ? stages.some(stage => stage.status === 'ok') ? 'partial' : 'error'
+        : 'ok';
+      return {
+        status,
+        mode,
+        dry_run: dryRun,
+        stages,
+        state_path: statePath,
+        lock_path: lockPath,
+        timestamp: new Date().toISOString(),
+      };
+    } finally {
+      if (!dryRun) {
+        this.releaseSyncLock(lockPath);
       }
     }
-    
-    // Future: sync other tools
+  }
+
+  private async syncGBrainStage(mode: SyncMode, dryRun: boolean): Promise<SyncStageResult> {
+    const started = Date.now();
+    if (!this.config.isToolEnabled('gbrain')) {
+      return this.makeStageResult('gbrain', mode, dryRun, started, 0, 0, 'skipped', { reason: 'gbrain disabled' });
+    }
+
+    if (dryRun) {
+      return this.makeStageResult('gbrain', mode, dryRun, started, 1, 1, 'ok', {
+        planned_command: ['gbrain', 'sync'],
+      });
+    }
+
+    try {
+      await this.execSafe('gbrain', ['sync']);
+      return this.makeStageResult('gbrain', mode, dryRun, started, 1, 1, 'ok');
+    } catch (error) {
+      return this.makeStageResult('gbrain', mode, dryRun, started, 1, 0, 'error', undefined, error instanceof Error ? error.message : 'gbrain sync failed');
+    }
+  }
+
+  private async syncToolsStage(
+    mode: SyncMode,
+    dryRun: boolean,
+    statePath: string,
+    previousState?: GStackGBrainSyncState,
+  ): Promise<SyncStageResult> {
+    const started = Date.now();
+    if (!this.config.isToolEnabled('gbrain')) {
+      return this.makeStageResult('tools', mode, dryRun, started, 0, 0, 'skipped', { reason: 'gbrain disabled' });
+    }
+
+    const enabledSources = TOOL_SOURCE_NAMES
+      .filter(tool => this.config.isToolEnabled(tool))
+      .map(tool => this.buildGBrainSource(tool));
+    const previousSources = Object.values(previousState?.sources ?? {});
+    const currentIds = new Set(enabledSources.map(source => source.id));
+    const legacySources = mode === 'full'
+      ? previousSources.filter(source => !currentIds.has(source.id) || !this.isPathHashSourceId(source.id))
+      : [];
+    const changedSources = enabledSources.filter(source => {
+      const previous = previousState?.sources[source.tool];
+      return mode === 'full' || !previous || previous.id !== source.id || previous.path !== source.path;
+    });
+    let changed = 0;
+    const errors: string[] = [];
+
+    for (const source of enabledSources) {
+      const shouldWrite = mode === 'full' || changedSources.some(changedSource => changedSource.tool === source.tool);
+      if (!shouldWrite) continue;
+      changed += 1;
+
+      if (dryRun) continue;
+
+      try {
+        this.attachGBrainSourceDotfile(source);
+        await this.execSafe('gbrain', ['sources', 'add', source.id, '--federated']);
+      } catch (error) {
+        errors.push(`${source.tool}: ${error instanceof Error ? error.message : 'source registration failed'}`);
+      }
+    }
+
+    for (const legacy of legacySources) {
+      changed += 1;
+      if (dryRun) continue;
+      try {
+        await this.execSafe('gbrain', ['sources', 'remove', legacy.id]);
+      } catch (error) {
+        errors.push(`${legacy.id}: ${error instanceof Error ? error.message : 'legacy source cleanup failed'}`);
+      }
+    }
+
+    return this.makeStageResult(
+      'tools',
+      mode,
+      dryRun,
+      started,
+      enabledSources.length + legacySources.length,
+      changed,
+      errors.length > 0 ? 'error' : 'ok',
+      {
+        state_path: statePath,
+        sources: enabledSources,
+        legacy_cleanup: legacySources.map(source => source.id),
+        commands: [
+          ...enabledSources.map(source => ['gbrain', 'sources', 'add', source.id, '--federated']),
+          ...legacySources.map(source => ['gbrain', 'sources', 'remove', source.id]),
+        ],
+      },
+      errors.length > 0 ? errors.join('; ') : undefined,
+    );
+  }
+
+  private buildGBrainSource(tool: string): GStackGBrainSource {
+    const sourcePath = this.config.getToolPath(tool) ?? DEFAULT_TOOL_PATHS[tool] ?? join(homedir(), `.${tool}`);
+    const pathhash8 = createHash('sha256').update(sourcePath).digest('hex').slice(0, 8);
+    const id = `gagent-${tool}-${pathhash8}`;
+    return {
+      tool,
+      id,
+      path: sourcePath,
+      pathhash8,
+      federated: true,
+      dotfile_path: join(sourcePath, '.gbrain-source'),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  private getSyncRoot(): string {
+    const configured = this.config.get('integration.gstack_gbrain_sync_root');
+    if (typeof configured === 'string' && configured.length > 0) return configured;
+    if (process.env.GAGENT_SYNC_ROOT) return process.env.GAGENT_SYNC_ROOT;
+    return join(homedir(), '.gagent', 'sync');
+  }
+
+  private attachGBrainSourceDotfile(source: GStackGBrainSource): void {
+    mkdirSync(source.path, { recursive: true });
+    writeFileSync(source.dotfile_path, JSON.stringify(source, null, 2));
+  }
+
+  private isPathHashSourceId(id: string): boolean {
+    return /^gagent-[a-z0-9-]+-[a-f0-9]{8}$/.test(id);
+  }
+
+  private readSyncState(statePath: string): GStackGBrainSyncState | undefined {
+    try {
+      if (!existsSync(statePath)) return undefined;
+      const parsed = JSON.parse(readFileSync(statePath, 'utf8'));
+      if (parsed?.version !== 1 || typeof parsed?.sources !== 'object') return undefined;
+      return parsed as GStackGBrainSyncState;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private writeSyncStateAtomic(statePath: string, state: GStackGBrainSyncState): void {
+    const dir = dirname(statePath);
+    mkdirSync(dir, { recursive: true });
+    const tmpPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(state, null, 2));
+    renameSync(tmpPath, statePath);
+  }
+
+  private acquireSyncLock(lockPath: string, staleMs: number): void {
+    mkdirSync(dirname(lockPath), { recursive: true });
+    if (existsSync(lockPath)) {
+      const ageMs = Date.now() - statSync(lockPath).mtimeMs;
+      if (staleMs > 0 && ageMs < staleMs) {
+        throw new Error(`gstack-gbrain-sync lock is active (${Math.round(ageMs)}ms old)`);
+      }
+      unlinkSync(lockPath);
+    }
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, created_at: new Date().toISOString() }, null, 2), { flag: 'wx' });
+  }
+
+  private releaseSyncLock(lockPath: string): void {
+    try {
+      if (existsSync(lockPath)) unlinkSync(lockPath);
+    } catch {
+      // Another process may have already recovered a stale lock.
+    }
+  }
+
+  private makeStageResult(
+    stage: string,
+    mode: SyncMode,
+    dryRun: boolean,
+    startedMs: number,
+    itemsTotal: number,
+    itemsChanged: number,
+    status: SyncStageResult['status'],
+    details?: Record<string, any>,
+    error?: string,
+  ): SyncStageResult {
+    const completedMs = Date.now();
+    return {
+      stage,
+      status,
+      mode,
+      dry_run: dryRun,
+      started_at: new Date(startedMs).toISOString(),
+      completed_at: new Date(completedMs).toISOString(),
+      duration_ms: completedMs - startedMs,
+      items_total: itemsTotal,
+      items_changed: itemsChanged,
+      details,
+      error,
+    };
   }
 
   getEnabledTools(): string[] {

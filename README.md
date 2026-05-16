@@ -40,7 +40,7 @@ npm run docs:api
 | `gagent init` | Detect and configure the local G-Stack installation. |
 | `gagent health` | Check configured tools, internal metrics, and stack health. |
 | `gagent run <task>` | Execute a task through the pipeline. |
-| `gagent sync` | Reconcile local stack state. |
+| `gagent sync` | Reconcile local stack state with incremental, full, and dry-run modes. |
 | `gagent config` | Read and update unified configuration. |
 | `gagent serve` | Start the MCP server. |
 | `gagent backup`, `restore`, `export` | Manage persisted state and portable artifacts. |
@@ -51,6 +51,12 @@ npm run docs:api
 The passthrough commands `brain`, `stack`, `orc`, `mirror`, `tom`, and `learn` delegate to
 the corresponding stack tool. The aliases `run-parallel`, `run-verified`, `run-safe`, and
 `run-smart` provide common pipeline presets.
+
+`gagent sync --incremental` writes gstack-compatible stage results, registers enabled tools
+as federated GBrain sources with `pathhash8` IDs, and attaches `.gbrain-source` metadata to
+each tool path. `gagent sync --full` also removes legacy source IDs from the prior sync
+state. `gagent sync --dry-run --json` reports the planned commands without acquiring a lock,
+writing source dotfiles, or updating state.
 
 ## Pipeline
 
@@ -98,6 +104,7 @@ Common environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `GAGENT_DB_PATH` | Override the SQLite database path. |
+| `GAGENT_SYNC_ROOT` | Override the `gstack-gbrain-sync` lock and state directory. |
 | `GAGENT_AUDIT_DIR` | Override JSONL audit output directory. |
 | `GAGENT_METRICS_PATH` | Override persisted local metrics path. |
 | `GAGENT_HEALTH_WEBHOOK_URL` | Send health-drop webhooks. |

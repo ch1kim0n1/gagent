@@ -265,20 +265,31 @@ program
 program
   .command('sync')
   .description('Sync state across all tools')
+  .option('--incremental', 'Run incremental sync (default)')
+  .option('--full', 'Run full sync and clean legacy source registrations')
+  .option('--dry-run', 'Show planned sync without writing files or registering sources')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const mode = options.full ? 'full' : 'incremental';
     if (!options.quiet) {
-      console.log(chalk.blue('Syncing all tools...'));
+      console.log(chalk.blue(`Syncing all tools (${mode}${options.dryRun ? ', dry run' : ''})...`));
     }
-    await registry.syncAll();
+    const result = await registry.syncAll({ mode, dryRun: options.dryRun });
     if (options.json) {
-      console.log(JSON.stringify({ status: 'synced', timestamp: new Date().toISOString() }, null, 2));
+      console.log(JSON.stringify(result, null, 2));
       return;
     }
     if (!options.quiet) {
-      console.log(chalk.green('Sync complete'));
+      for (const stage of result.stages) {
+        const color = stage.status === 'ok' ? 'green' : stage.status === 'skipped' ? 'yellow' : 'red';
+        console.log(`  ${chalk[color](stage.status.padEnd(7))} ${stage.stage}: ${stage.items_changed}/${stage.items_total} changed`);
+        if (stage.error) console.log(`    ${chalk.red(stage.error)}`);
+      }
+      const statusColor = result.status === 'ok' ? 'green' : result.status === 'partial' ? 'yellow' : 'red';
+      console.log(chalk[statusColor](`Sync ${result.status}`));
     }
+    if (result.status !== 'ok') process.exitCode = 1;
   });
 
 program
