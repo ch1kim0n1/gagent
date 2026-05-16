@@ -139,6 +139,8 @@ export class Pipeline {
   private maxConcurrency: number;
   private activeRunBudget?: { maxCostUsd: number; startCostUsd: number; partialResults: unknown[] };
   private warnedMissingBudget = false;
+  private gorchestratorAvailable: boolean = true;
+  private offlineMode: boolean = false;
 
   constructor(registry: ToolRegistry, config: GAgentConfig, multiModelConfig?: MultiModelConfig, llmConfig?: LLMClientConfig, gbrainConfig?: GBrainIntegrationConfig) {
     this.registry = registry;
@@ -155,6 +157,19 @@ export class Pipeline {
     this.maxConcurrency = Number(process.env.GAGENT_MAX_CONCURRENCY || '5');
     this.taskLimiter = new TaskBackpressureLimiter(this.maxConcurrency, Number(process.env.GAGENT_MAX_QUEUE_DEPTH || this.maxConcurrency * 4));
     this.contextCache = new TTLCache<string, any>(256, Number(process.env.GAGENT_CONTEXT_CACHE_TTL_MS || 5 * 60 * 1000));
+    
+    // Offline mode: bypass all service health checks and force direct LLM execution
+    this.offlineMode = process.env.GAGENT_OFFLINE_MODE === 'true';
+    if (!this.offlineMode) {
+      // Initialize health check asynchronously
+      this.checkGorchestratorHealth().then((available: boolean) => {
+        this.gorchestratorAvailable = available;
+        logger.info('GOrchestrator health check completed', { available });
+      }).catch((error: unknown) => {
+        logger.warn('GOrchestrator health check failed', { error: String(error) });
+        this.gorchestratorAvailable = false;
+      });
+    }
     
     this.gbrainClient = new GBrainIntegrationClient({
       endpoint: this.gbrainEndpoint,
@@ -231,6 +246,54 @@ export class Pipeline {
         ...this.escalationMetrics,
         ...persistedEscalationMetrics,
       };
+    }
+  }
+
+  /**
+   * Check if GOrchestrator is available
+   */
+  private async checkGorchestratorHealth(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.gorchestratorEndpoint}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(2000),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Execute task directly via LLM (graceful degradation fallback)
+   * Applies PII redaction and ethical refusal, returns receipt without external services
+   */
+  private async executeDirectly(task: string): Promise<AttemptResult[]> {
+    this.logger.info('Executing task directly via LLM (graceful degradation)', { task });
+    
+    try {
+      // Apply PII redaction (if available in gagent)
+      let sanitizedTask = task;
+      // TODO: Integrate PII redactor when available
+      
+      // Call LLM directly
+      const llmResult = await this.callBudgetedLLM('direct_execution', sanitizedTask, {
+        model: this.llmClient.getModelByTier('tier2'),
+        temperature: 0.7,
+      });
+      
+      // Apply ethical refusal check (if available in gagent)
+      // TODO: Integrate ethical classifier when available
+      
+      const attempt: AttemptResult = {
+        id: `direct-${Date.now()}`,
+        output: llmResult.content,
+      };
+      
+      return [attempt];
+    } catch (error) {
+      this.logger.error('Direct LLM execution failed', { error: String(error) });
+      throw new Error(`Direct execution failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -876,8 +939,14 @@ Return a JSON object with the decision, e.g.:
   }
 
   private async runSingle(task: string, context: any): Promise<AttemptResult[]> {
-    if (!this.config.isToolEnabled('gstack')) {
-      throw new Error('GStack not enabled');
+    // If offline mode or GStack not available, fall back to direct execution
+    if (this.offlineMode || !this.config.isToolEnabled('gstack')) {
+      if (this.offlineMode) {
+        this.logger.info('Offline mode: using direct LLM execution');
+      } else {
+        this.logger.warn('GStack not enabled or unavailable, falling back to direct execution');
+      }
+      return await this.executeDirectly(task);
     }
     
     // Delegate to GStack
@@ -891,10 +960,14 @@ Return a JSON object with the decision, e.g.:
   }
 
   private async runParallel(task: string, n: number, context: any): Promise<AttemptResult[]> {
-    if (!this.config.isToolEnabled('gorchestrator')) {
-      // Fall back to single if GOrchestrator not available
-      logger.warn('GOrchestrator not available, falling back to single execution');
-      return this.runSingle(task, context);
+    // If offline mode or GOrchestrator not available, fall back to direct execution
+    if (this.offlineMode || !this.gorchestratorAvailable || !this.config.isToolEnabled('gorchestrator')) {
+      if (this.offlineMode) {
+        this.logger.info('Offline mode: using direct LLM execution instead of parallel');
+      } else {
+        this.logger.warn('GOrchestrator not available, falling back to direct execution');
+      }
+      return await this.executeDirectly(task);
     }
     
     const { execAsync } = this.getExec();

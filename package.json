@@ -5,6 +5,32 @@
   "bin": {
     "gagent": "./dist/cli.js"
   },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./PIIRedactor": {
+      "import": "./dist/core/pii-redactor.js",
+      "types": "./dist/core/pii-redactor.d.ts"
+    },
+    "./EthicalClassifier": {
+      "import": "./dist/core/ethical-refusal-classifier.js",
+      "types": "./dist/core/ethical-refusal-classifier.d.ts"
+    },
+    "./pii": {
+      "require": "./dist/gagent/src/core/pii-redactor.js",
+      "types": "./dist/gagent/src/core/pii-redactor.d.ts"
+    },
+    "./ethics": {
+      "require": "./dist/gagent/src/core/ethical-refusal-classifier.js",
+      "types": "./dist/gagent/src/core/ethical-refusal-classifier.d.ts"
+    },
+    "./client": {
+      "require": "./dist/gagent/src/client.js",
+      "types": "./dist/gagent/src/client.d.ts"
+    }
+  },
   "files": [
     "dist/",
     "README.md"

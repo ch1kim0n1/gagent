@@ -1,0 +1,137 @@
+version: '3.8'
+
+# GAgent standalone compose.
+# Core services (gbrain, gorchestrator) start by default.
+# Optional services (gmirror, gtom, glearn) use the "optional" profile
+# to avoid bloating a minimal deployment.
+#
+# Start everything:    docker compose --profile optional up
+# Start core only:     docker compose up
+
+services:
+  gagent:
+    build: .
+    ports:
+      - '3004:8080'
+    environment:
+      - NODE_ENV=production
+      - GAGENT_PORT=8080
+      - GBRAIN_ENDPOINT=http://gbrain:3000
+      - GORCHESTRATOR_ENDPOINT=http://gorchestrator:8080
+      - GMIRROR_ENDPOINT=http://gmirror:3002
+      - GTOM_ENDPOINT=http://gtom:3003
+      - GLEARN_ENDPOINT=http://glearn:8080
+    volumes:
+      - gagent-data:/app/data
+    depends_on:
+      gbrain:
+        condition: service_healthy
+      gorchestrator:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health/live']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  gbrain:
+    build:
+      context: ../gbrain
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GBRAIN_DB_PATH=/data/gbrain.db
+    volumes:
+      - gbrain-data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  gorchestrator:
+    build:
+      context: ../gorchestrator
+    ports:
+      - '3001:8080'
+    environment:
+      - NODE_ENV=production
+      - GORCHESTRATOR_PORT=8080
+      - GBRAIN_ENDPOINT=http://gbrain:3000
+      - SANDBOX_BACKEND=inprocess
+    depends_on:
+      gbrain:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health/live']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Optional — start with: docker compose --profile optional up
+
+  gmirror:
+    profiles: ['optional']
+    build:
+      context: ../gmirror
+    ports:
+      - '3002:8080'
+    environment:
+      - NODE_ENV=production
+      - GMIRROR_PORT=8080
+      - GBRAIN_ENDPOINT=http://gbrain:3000
+    depends_on:
+      gbrain:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health/live']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  gtom:
+    profiles: ['optional']
+    build:
+      context: ../GToM
+    ports:
+      - '3003:8080'
+    environment:
+      - NODE_ENV=production
+      - GTOM_PORT=8080
+      - GBRAIN_ENDPOINT=http://gbrain:3000
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health/live']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  glearn:
+    profiles: ['optional']
+    build:
+      context: ../glearn
+    ports:
+      - '3005:8080'
+    environment:
+      - NODE_ENV=production
+      - GLEARN_PORT=8080
+      - GBRAIN_ENDPOINT=http://gbrain:3000
+    depends_on:
+      gbrain:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health/live']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  gagent-data:
+  gbrain-data:

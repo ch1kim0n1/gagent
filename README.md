@@ -128,6 +128,62 @@ Common environment variables:
 | `GBRAIN_CIRCUIT_FAILURES`, `GBRAIN_CIRCUIT_COOLDOWN_MS` | GBrain circuit-breaker controls. |
 | `GMIRROR_ENDPOINT`, `GTOM_ENDPOINT`, `GLEARN_ENDPOINT` | Stack service endpoints. |
 
+## Standalone Utilities
+
+GAgent exports utilities that can be used independently of the full pipeline:
+
+### PII Redactor
+
+Redact personally identifiable information from text:
+
+```typescript
+import { PIIRedactor, defaultDyadRedactor } from 'gagent/PIIRedactor';
+
+const redactor = new PIIRedactor({
+  redact_phone_numbers: true,
+  redact_names: true,
+  redact_locations: true,
+  hash_contact_ids: true,
+  knownNames: ['Alice', 'Bob'],
+});
+
+const redacted = redactor.redactText('Call Alice at 555-1234');
+// '[NAME] at [PHONE]'
+```
+
+Or use the default Dyad configuration:
+
+```typescript
+import { defaultDyadRedactor } from 'gagent/PIIRedactor';
+const redactor = defaultDyadRedactor();
+```
+
+### Ethical Classifier
+
+Classify messages for ethical refusal before surfacing insights:
+
+```typescript
+import { EthicalRefusalClassifier } from 'gagent/EthicalClassifier';
+
+const classifier = new EthicalRefusalClassifier(llmClient);
+const result = await classifier.classify({
+  message_window: [...], // RedactedMessage[]
+  proposed_insight: 'The user should leave their partner.',
+  insight_type: 'pattern',
+});
+
+if (result.should_refuse) {
+  console.log(`Refused: ${result.reason} - ${result.explanation}`);
+}
+```
+
+The classifier uses both heuristic rules and LLM-based classification to detect:
+- Minors in the conversation
+- Blame assignment language
+- Out-of-scope clinical advice
+- Coercive framing
+- Insufficient data
+
 ## Documentation
 
 | Document | Scope |
