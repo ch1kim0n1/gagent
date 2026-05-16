@@ -6,6 +6,7 @@ import { dirname, join } from 'path';
 import { GAgentConfig } from '../config/manager.js';
 import { ReceiptRegistry } from '../core/receipt-registry.js';
 import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
+import { getDefaultSecretManager } from '../core/security.js';
 
 interface ToolInfo {
   installed: boolean;
@@ -185,8 +186,9 @@ export class ToolRegistry {
   }
 
   private async detectGeneric(name: string): Promise<ToolInfo> {
-    const home = process.env.HOME || process.env.USERPROFILE;
-    const toolPath = `${home}/.${name}`;
+    const toolPath = join(homedir(), `.${name}`);
+    const binaryName = process.platform === 'win32' ? `${name}.exe` : name;
+    const binaryPath = join(toolPath, binaryName);
     
     try {
       if (!existsSync(toolPath)) {
@@ -195,20 +197,24 @@ export class ToolRegistry {
           message: 'Not yet built (see architecture docs)'
         };
       }
-      
-      // Use absolute path to binary instead of PATH lookup
-      const binaryPath = process.platform === 'win32' 
-        ? `${toolPath}/${name}.exe`
-        : `${toolPath}/${name}`;
+
+      if (!existsSync(binaryPath)) {
+        return {
+          installed: true,
+          path: toolPath,
+          healthy: false,
+          message: `Directory exists but binary not found at ${binaryPath}`,
+        };
+      }
       
       const { stdout } = await this.execSafe(binaryPath, ['--version']);
       
       return {
-        installed: existsSync(toolPath),
+        installed: true,
         path: toolPath,
         version: stdout.trim() || undefined,
         healthy: stdout.trim().length > 0,
-        message: existsSync(toolPath) && stdout.trim().length === 0 
+        message: stdout.trim().length === 0
           ? 'Directory exists but binary not linked' 
           : undefined
       };
@@ -312,10 +318,13 @@ export class ToolRegistry {
 
   private async checkLLMAPI(): Promise<ToolInfo> {
     const start = Date.now();
+    const secrets = getDefaultSecretManager();
+    const anthropicApiKey = secrets.get('anthropic_api_key');
+    const openaiApiKey = secrets.get('openai_api_key');
     try {
-      if (process.env.ANTHROPIC_API_KEY) {
+      if (anthropicApiKey) {
         const Anthropic = (await import('@anthropic-ai/sdk')).default;
-        const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const client = new Anthropic({ apiKey: anthropicApiKey });
         const response = await client.messages.create({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 1,
@@ -323,9 +332,9 @@ export class ToolRegistry {
         });
         return { installed: true, healthy: Boolean(response.id), latency_ms: Date.now() - start, message: 'Anthropic ping' };
       }
-      if (process.env.OPENAI_API_KEY) {
+      if (openaiApiKey) {
         const OpenAI = (await import('openai')).default;
-        const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const client = new OpenAI({ apiKey: openaiApiKey });
         const response = await client.chat.completions.create({
           model: 'gpt-4o-mini',
           max_tokens: 1,

@@ -155,6 +155,23 @@ export class LocalAuditLogger {
     });
   }
 
+  logSecurityEvent(entry: {
+    event: string;
+    actor?: string;
+    target?: string;
+    scope?: string;
+    success: boolean;
+    correlation_id?: string;
+    metadata?: Record<string, unknown>;
+    error?: string;
+  }): void {
+    this.append(`security-${isoWeek(new Date())}.jsonl`, {
+      timestamp: new Date().toISOString(),
+      tool: this.tool,
+      ...entry,
+    });
+  }
+
   private append(fileName: string, entry: Record<string, unknown>): void {
     try {
       fs.appendFileSync(path.join(this.auditDir, fileName), JSON.stringify(redactPII(entry)) + '\n', 'utf8');

@@ -10,7 +10,8 @@ import { GAgentConfig } from '../config/manager.js';
 import { Pipeline } from '../pipeline/orchestrator.js';
 import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
 import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
-import { LocalLogger, type LogLevel } from '../core/observability.js';
+import { LocalAuditLogger, LocalLogger, type LogLevel } from '../core/observability.js';
+import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
 
 const logger = new LocalLogger('gagent-mcp-server', (process.env.GAGENT_LOG_LEVEL as LogLevel) || 'INFO');
 
@@ -29,6 +30,9 @@ export async function startMcpServer(
   port?: string
 ): Promise<void> {
   const pipeline = new Pipeline(registry, config);
+  const secrets = getDefaultSecretManager();
+  const permissions = PermissionModel.loadDefault();
+  const securityAudit = new LocalAuditLogger('gagent');
   
   const gbrainEndpoint = process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
   const gbrainClient = new GBrainIntegrationClient({
@@ -36,15 +40,14 @@ export async function startMcpServer(
   });
 
   // Initialize authentication middleware
-  const authSecret = process.env.GAGENT_AUTH_SECRET || 'dev-secret-key';
   const authMiddleware = createAuthMiddleware({
-    secret: authSecret,
+    secret: secrets.get('gagent_auth_secret') || 'dev-secret-key',
     tool: 'gagent',
     defaultRoles: parseScopes(process.env.GAGENT_MCP_DEFAULT_SCOPES || 'read,write'),
   });
   const requireAuth = process.env.GAGENT_REQUIRE_AUTH === 'true';
   const allowAnonymousRead = process.env.GAGENT_ALLOW_ANONYMOUS_READ !== 'false';
-  const bootstrapToken = process.env.GAGENT_MCP_TOKEN;
+  const bootstrapToken = secrets.get('gagent_mcp_token');
   const bootstrapScopes = parseScopes(process.env.GAGENT_MCP_TOKEN_SCOPES || 'read,write');
   const rateLimitRpm = parseLimit(process.env.GAGENT_RATE_LIMIT_RPM, 60);
   const rateLimitRph = parseLimit(process.env.GAGENT_RATE_LIMIT_RPH, 1000);
@@ -267,11 +270,26 @@ export async function startMcpServer(
     const requiredScope = requiredScopeForTool(name);
     const auth = authorize(request.params._meta, requiredScope);
     if (!auth.ok) {
+      securityAudit.logSecurityEvent({
+        event: 'mcp_auth_denied',
+        target: name,
+        scope: requiredScope,
+        success: false,
+        error: auth.error,
+      });
       return errorResponse(auth.error);
     }
 
     const rateLimit = checkRateLimit(auth.token);
     if (!rateLimit.allowed) {
+      securityAudit.logSecurityEvent({
+        event: 'mcp_rate_limited',
+        actor: tokenLabel(auth.token),
+        target: name,
+        scope: requiredScope,
+        success: false,
+        metadata: { reset_at: rateLimit.resetAt },
+      });
       return errorResponse(`Rate limit exceeded. Reset at ${rateLimit.resetAt}`);
     }
 
@@ -532,12 +550,13 @@ export async function startMcpServer(
 
   function scopesForToken(token: string, fallbackRoles: string[]): McpScope[] {
     if (bootstrapToken && token === bootstrapToken) {
-      return bootstrapScopes;
+      return permissions.scopesForToken(token, bootstrapScopes).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
     }
     if (bootstrapToken) {
       return [];
     }
-    return parseScopes(fallbackRoles.join(','));
+    const fallback = parseScopes(fallbackRoles.join(','));
+    return permissions.scopesForToken(token, fallback).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
   }
 
   function requiredScopeForTool(name: string): McpScope {
@@ -581,6 +600,10 @@ export async function startMcpServer(
       ],
       isError: true,
     };
+  }
+
+  function tokenLabel(token: string): string {
+    return token === 'anonymous-read' ? token : `token:${authMiddleware.getAuth().hashToken(token)}`;
   }
 
   if (port) {

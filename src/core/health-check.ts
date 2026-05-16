@@ -1,4 +1,5 @@
 import { ReceiptRegistry } from './receipt-registry.js';
+import { getDefaultSecretManager } from './security.js';
 
 export interface HealthCheckResult {
   status: 'healthy' | 'degraded' | 'unhealthy';
@@ -126,17 +127,19 @@ export class HealthChecker {
    */
   private async checkLLMAPI(): Promise<{ available: boolean; latency_ms?: number; error?: string }> {
     try {
-      const apiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
-      if (!apiKey) {
+      const secrets = getDefaultSecretManager();
+      const anthropicApiKey = secrets.get('anthropic_api_key');
+      const openaiApiKey = secrets.get('openai_api_key');
+      if (!anthropicApiKey && !openaiApiKey) {
         return { available: false, error: 'No API key configured' };
       }
 
       const startTime = Date.now();
       
       // Try a cheap API call (use Haiku for minimal cost)
-      if (process.env.ANTHROPIC_API_KEY) {
+      if (anthropicApiKey) {
         const Anthropic = (await import('@anthropic-ai/sdk')).default;
-        const client = new Anthropic({ apiKey });
+        const client = new Anthropic({ apiKey: anthropicApiKey });
         const response = await client.messages.create({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 10,
@@ -144,9 +147,9 @@ export class HealthChecker {
         });
         const latency = Date.now() - startTime;
         return { available: response.id ? true : false, latency_ms: latency };
-      } else if (process.env.OPENAI_API_KEY) {
+      } else if (openaiApiKey) {
         const OpenAI = (await import('openai')).default;
-        const client = new OpenAI({ apiKey });
+        const client = new OpenAI({ apiKey: openaiApiKey });
         const response = await client.chat.completions.create({
           model: 'gpt-4o-mini',
           max_tokens: 10,

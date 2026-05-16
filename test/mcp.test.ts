@@ -36,6 +36,8 @@ describe('GAgent MCP Server', () => {
     expect(serverSource).toContain('requiredScopeForTool');
     expect(serverSource).toContain('Insufficient permissions: requires');
     expect(serverSource).toContain('Rate limit exceeded');
-    expect(serverSource).toContain('GAGENT_MCP_TOKEN');
+    expect(serverSource).toContain("secrets.get('gagent_mcp_token')");
+    expect(serverSource).toContain('PermissionModel.loadDefault');
+    expect(serverSource).toContain('mcp_auth_denied');
   });
 });

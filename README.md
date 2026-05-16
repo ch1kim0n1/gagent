@@ -42,6 +42,7 @@ npm run docs:api
 | `gagent run <task>` | Execute a task through the pipeline. |
 | `gagent sync` | Reconcile local stack state with incremental, full, and dry-run modes. |
 | `gagent config` | Read and update unified configuration. |
+| `gagent secrets list`, `secrets rotate` | Inspect secret metadata and rotate local secrets without printing values. |
 | `gagent serve` | Start the MCP server. |
 | `gagent backup`, `restore`, `export` | Manage persisted state and portable artifacts. |
 | `gagent eval`, `replay`, `receipts`, `diff` | Record, replay, and inspect execution evidence. |
@@ -105,8 +106,13 @@ Common environment variables:
 | --- | --- |
 | `GAGENT_DB_PATH` | Override the SQLite database path. |
 | `GAGENT_SYNC_ROOT` | Override the `gstack-gbrain-sync` lock and state directory. |
+| `GAGENT_SECRET_DIR` | Override the file-backed secret manager directory. |
+| `GAGENT_PERMISSIONS_FILE` | JSON token-hash permission grant file for MCP callers. |
 | `GAGENT_AUDIT_DIR` | Override JSONL audit output directory. |
 | `GAGENT_METRICS_PATH` | Override persisted local metrics path. |
+| `GAGENT_RATE_LIMIT_RPM`, `GAGENT_RATE_LIMIT_RPH` | MCP per-token request limits. |
+| `GAGENT_HEALTH_RATE_LIMIT_RPM` | Public health endpoint per-client request limit. |
+| `GAGENT_HEALTH_SHUTDOWN_TOKEN` | Legacy fallback for the health shutdown secret. |
 | `GAGENT_HEALTH_WEBHOOK_URL` | Send health-drop webhooks. |
 | `GAGENT_LLM_CALL_RESERVE_USD` | Per-call budget reservation. |
 | `GAGENT_BUDGET_RESERVATION_TTL_MS` | Reservation expiration window. |

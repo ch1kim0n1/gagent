@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
 import { coreLogger } from './observability.js';
+import { getDefaultSecretManager } from './security.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -106,8 +107,8 @@ export class ReceiptRegistry {
     this.schemaPath = path.join(this.baseDir, `schema.json`);
     this.signatureKeyPath = path.join(os.homedir(), `.${projectName}`, 'receipt-signing.key');
     
-    // Load signature key from env, or create a local HMAC key during initialization.
-    this.signatureKey = process.env.RECEIPT_SIGNATURE_KEY || '';
+    // Load signature key through the secret manager, or create a local HMAC key during initialization.
+    this.signatureKey = getDefaultSecretManager().get('receipt_signature_key') || '';
     
     // Initialize persistence - fail loudly if cannot create directory
     this.ready = this.initializePersistence();

@@ -7,6 +7,7 @@ import { ToolRegistry } from './tools/registry.js';
 import { Pipeline } from './pipeline/orchestrator.js';
 import { startMcpServer } from './mcp/server.js';
 import { GAgentPersistenceManager } from './core/gagent-persistence.js';
+import { getDefaultSecretManager, sanitizeCliFloat, sanitizeCliInteger, sanitizeCliString } from './core/security.js';
 
 const config = new GAgentConfig();
 const registry = new ToolRegistry(config);
@@ -161,6 +162,60 @@ program
     }
   });
 
+const secretsCommand = program
+  .command('secrets')
+  .description('Manage local GAgent secrets');
+
+secretsCommand
+  .command('list')
+  .description('List configured secret names without values')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((options) => {
+    const secrets = getDefaultSecretManager();
+    const records = secrets.list();
+    if (options.json) {
+      console.log(JSON.stringify(records, null, 2));
+      return;
+    }
+    if (!options.quiet) {
+      for (const record of records) {
+        console.log(`${record.name} v${record.version} ${record.source} ${record.rotated_at}`);
+      }
+    }
+  });
+
+secretsCommand
+  .command('rotate <name>')
+  .description('Rotate or create a local secret')
+  .option('--value <value>', 'Explicit secret value; otherwise one is generated')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((name, options) => {
+    try {
+      const secrets = getDefaultSecretManager();
+      const value = options.value === undefined
+        ? undefined
+        : sanitizeCliString(options.value, 'secret value', 20000);
+      const record = secrets.rotate(sanitizeCliString(name, 'secret name', 128), value);
+      const result = {
+        name: record.name,
+        version: record.version,
+        rotated_at: record.rotated_at,
+        path: secrets.pathFor(record.name),
+      };
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.green(`Secret rotated: ${result.name} v${result.version}`));
+        console.log(chalk.gray(`Stored at: ${result.path}`));
+      }
+    } catch (error) {
+      console.error(chalk.red(`[GAgent] ${error instanceof Error ? error.message : String(error)}`));
+      process.exit(1);
+    }
+  });
+
 program
   .command('run <task>')
   .description('Execute task through the pipeline')
@@ -175,50 +230,31 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (task, options) => {
-    // Basic input validation
-    if (!task || typeof task !== 'string' || task.trim().length === 0) {
-      console.error(chalk.red('Error: Task must be a non-empty string'));
+    let cleanTask: string;
+    let parallel: number;
+    let cycles: number;
+    let budgetUsd: number | undefined;
+    try {
+      cleanTask = sanitizeCliString(task, 'task', 10000).trim();
+      if (!cleanTask) throw new Error('Task must be a non-empty string');
+      parallel = sanitizeCliInteger(options.parallel, 'Parallel', 1, 100);
+      cycles = sanitizeCliInteger(options.cycles, 'Cycles', 1, 100);
+      budgetUsd = options.budgetUsd === undefined
+        ? undefined
+        : sanitizeCliFloat(options.budgetUsd, 'Budget', 0.01, 1000000);
+    } catch (error) {
+      console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
       process.exit(1);
-    }
-    
-    if (task.length > 10000) {
-      console.error(chalk.red('Error: Task description too long (max 10000 characters)'));
-      process.exit(1);
-    }
-
-    if (task.includes('\0')) {
-      console.error(chalk.red('Error: Task contains invalid characters'));
-      process.exit(1);
-    }
-
-    const parallel = parseInt(options.parallel);
-    if (isNaN(parallel) || parallel < 1 || parallel > 100) {
-      console.error(chalk.red('Error: Parallel must be a number between 1 and 100'));
-      process.exit(1);
-    }
-    const cycles = parseInt(options.cycles);
-    if (isNaN(cycles) || cycles < 1 || cycles > 100) {
-      console.error(chalk.red('Error: Cycles must be between 1 and 100'));
-      process.exit(1);
-    }
-
-    // Budget validation
-    if (options.budgetUsd !== undefined) {
-      const budget = parseFloat(options.budgetUsd);
-      if (isNaN(budget) || budget <= 0) {
-        console.error(chalk.red('Error: Budget must be a positive number'));
-        process.exit(1);
-      }
     }
 
     const runOptions = {
-      task: task.trim(),
+      task: cleanTask,
       parallel,
       verify: options.verify || options.full,
       cognitiveCheck: options.cognitiveCheck || options.full,
       learn: options.learn || options.full,
       dryRun: options.dryRun,
-      budgetUsd: options.budgetUsd ? parseFloat(options.budgetUsd) : undefined,
+      budgetUsd,
       cycles
     };
     
@@ -334,13 +370,22 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    let port: number | undefined;
+    try {
+      port = options.port === undefined
+        ? undefined
+        : sanitizeCliInteger(options.port, 'Port', 1, 65535);
+    } catch (error) {
+      console.error(chalk.red(`[GAgent] ${error instanceof Error ? error.message : String(error)}`));
+      process.exit(1);
+    }
     if (options.json) {
-      console.log(JSON.stringify({ status: 'starting', port: options.port || 'stdio' }, null, 2));
+      console.log(JSON.stringify({ status: 'starting', port: port || 'stdio' }, null, 2));
     }
     if (!options.quiet) {
       console.log(chalk.blue('Starting GAgent MCP server...'));
     }
-    await startMcpServer(registry, config, options.port);
+    await startMcpServer(registry, config, port?.toString());
   });
 
 // Tool passthrough commands
@@ -1134,6 +1179,9 @@ function buildCompletionScript(shell: string): string | null {
     'backup',
     'restore',
     'export',
+    'secrets',
+    'rotate',
+    'list',
     'run',
     'sync',
     'config',
@@ -1178,6 +1226,7 @@ function buildCompletionScript(shell: string): string | null {
     '--dry-run',
     '--corpus',
     '--against',
+    '--value',
   ];
   const words = [...commands, ...options].join(' ');
 

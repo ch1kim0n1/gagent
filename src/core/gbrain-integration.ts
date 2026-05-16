@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { getDefaultSecretManager } from './security.js';
 
 export type GBrainIntegrationMode = 'http' | 'mcp';
 
@@ -75,10 +76,11 @@ export class GBrainIntegrationClient {
   private circuitOpenUntil = 0;
 
   constructor(config: GBrainIntegrationConfig = {}) {
+    const secrets = getDefaultSecretManager();
     this.endpoint = trimTrailingSlash(config.endpoint || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000');
     this.mcpEndpoint = trimTrailingSlash(config.mcpEndpoint || process.env.GBRAIN_MCP_ENDPOINT || `${this.endpoint}/mcp`);
     this.mode = config.mode || (process.env.GBRAIN_INTEGRATION_MODE as GBrainIntegrationMode | undefined) || 'http';
-    this.authToken = config.authToken || process.env.GBRAIN_AUTH_TOKEN;
+    this.authToken = config.authToken || secrets.get('gbrain_auth_token');
     this.timeoutMs = config.timeoutMs ?? Number(process.env.GBRAIN_TIMEOUT_MS ?? 30000);
     this.maxRetries = config.maxRetries ?? Number(process.env.GBRAIN_MAX_RETRIES ?? 3);
     this.initialBackoffMs = config.initialBackoffMs ?? Number(process.env.GBRAIN_BACKOFF_MS ?? 250);
