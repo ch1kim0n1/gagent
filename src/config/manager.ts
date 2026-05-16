@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
-import { createPersistenceManager } from '../../../shared/src/core/persistence-manager.js';
+import { createPersistenceManager } from '@gstack/shared/core';
 
 const ConfigSchema = z.object({
   version: z.string(),

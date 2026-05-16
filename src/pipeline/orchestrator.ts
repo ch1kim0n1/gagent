@@ -27,9 +27,9 @@ import {
   GBrainIntegrationClient,
   GBrainIntegrationConfig,
 } from '../core/gbrain-integration.js';
-import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
-import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
-import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
+import { DriftDetector } from '@gstack/shared/core';
+import { LatencyTracker } from '@gstack/shared/core';
+import { HealthCheckResult } from '@gstack/shared/health';
 import { GAgentObservability, LocalAuditLogger, LocalLogger, coreLogger } from '../core/observability.js';
 import { ProgressEvent, TaskBackpressureLimiter, TTLCache } from '../core/performance.js';
 import { DyadAnalysisHandler } from '../handlers/dyad-analysis-handler.js';

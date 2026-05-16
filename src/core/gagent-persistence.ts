@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
+import { StructuredLogger } from '@gstack/shared/core';
 
 export interface AgentRunRecord {
   run_id: string;

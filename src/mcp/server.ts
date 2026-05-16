@@ -9,7 +9,7 @@ import { ToolRegistry } from '../tools/registry.js';
 import { GAgentConfig } from '../config/manager.js';
 import { Pipeline } from '../pipeline/orchestrator.js';
 import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
-import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
+import { createAuthMiddleware } from '@gstack/shared/core';
 import { LocalAuditLogger, LocalLogger, type LogLevel } from '../core/observability.js';
 import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
 
