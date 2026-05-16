@@ -11,6 +11,8 @@ export interface AgentRunRecord {
   exit_code: number;
   cost_usd: number;
   timestamp?: string;
+  dyad_id?: string | null;
+  message_count?: number | null;
 }
 
 export interface StoredLlmCall {
@@ -42,7 +44,7 @@ export interface StoredCostEntry {
 export class GAgentPersistenceManager {
   private db: any;
   private dbPath: string;
-  private readonly SCHEMA_VERSION = 2;
+  private readonly SCHEMA_VERSION = 3;
   private logger: StructuredLogger;
   private backupDir: string;
   private backupRetentionCount: number;
@@ -81,7 +83,7 @@ export class GAgentPersistenceManager {
       )
     `);
 
-    const row = this.db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+    const row = this.db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number } | undefined;
     const currentVersion = row?.version || 0;
 
     if (currentVersion < this.SCHEMA_VERSION) {
@@ -116,21 +118,23 @@ export class GAgentPersistenceManager {
   addAgentRun(run: AgentRunRecord): void {
     this.db.prepare(`
       INSERT OR REPLACE INTO agent_runs
-      (run_id, task, output, exit_code, cost_usd, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?)
+      (run_id, task, output, exit_code, cost_usd, timestamp, dyad_id, message_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       run.run_id,
       run.task,
       run.output,
       run.exit_code,
       run.cost_usd,
-      run.timestamp || new Date().toISOString()
+      run.timestamp || new Date().toISOString(),
+      run.dyad_id || null,
+      run.message_count ?? null
     );
   }
 
   getAgentRuns(limit: number = 100): Array<Required<AgentRunRecord>> {
     return this.db.prepare(`
-      SELECT run_id, task, output, exit_code, cost_usd, timestamp
+      SELECT run_id, task, output, exit_code, cost_usd, timestamp, dyad_id, message_count
       FROM agent_runs
       ORDER BY timestamp DESC
       LIMIT ?
@@ -139,7 +143,7 @@ export class GAgentPersistenceManager {
 
   getAgentRunById(runId: string): Required<AgentRunRecord> | undefined {
     return this.db.prepare(`
-      SELECT run_id, task, output, exit_code, cost_usd, timestamp
+      SELECT run_id, task, output, exit_code, cost_usd, timestamp, dyad_id, message_count
       FROM agent_runs
       WHERE run_id = ?
     `).get(runId) as Required<AgentRunRecord> | undefined;
@@ -216,6 +220,20 @@ export class GAgentPersistenceManager {
     return id;
   }
 
+  saveCheckpoint(source: string, lastRowid: number): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO ingestion_checkpoints (source, last_rowid, updated_at)
+      VALUES (?, ?, ?)
+    `).run(source, lastRowid, new Date().toISOString());
+  }
+
+  getCheckpoint(source: string): number | null {
+    const row = this.db.prepare(`
+      SELECT last_rowid FROM ingestion_checkpoints WHERE source = ?
+    `).get(source) as { last_rowid: number } | undefined;
+    return row ? row.last_rowid : null;
+  }
+
   transaction<T>(operation: () => T): T {
     return this.db.transaction(operation)();
   }
@@ -255,6 +273,7 @@ export class GAgentPersistenceManager {
       escalation_metrics: this.loadEscalationMetrics(),
       llm_call_history: this.db.prepare('SELECT * FROM llm_call_history ORDER BY timestamp DESC').all(),
       cost_ledger: this.db.prepare('SELECT * FROM cost_ledger ORDER BY timestamp DESC').all(),
+      ingestion_checkpoints: this.db.prepare('SELECT * FROM ingestion_checkpoints ORDER BY updated_at DESC').all(),
       migrations: this.db.prepare('SELECT * FROM migrations ORDER BY version ASC').all(),
     };
   }
@@ -304,7 +323,15 @@ export class GAgentPersistenceManager {
     for (const statement of sql.split(/;\s*(?:\r?\n|$)/)) {
       const trimmed = statement.trim();
       if (trimmed) {
-        this.db.exec(trimmed);
+        try {
+          this.db.exec(trimmed);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/duplicate column name/i.test(message)) {
+            continue;
+          }
+          throw error;
+        }
       }
     }
   }
@@ -355,6 +382,19 @@ export class GAgentPersistenceManager {
             metadata_json TEXT
           );
           CREATE INDEX IF NOT EXISTS idx_cost_ledger_timestamp ON cost_ledger(timestamp);
+        `,
+      },
+      {
+        version: 3,
+        name: 'dyad_schema',
+        sql: `
+          ALTER TABLE agent_runs ADD COLUMN dyad_id TEXT;
+          ALTER TABLE agent_runs ADD COLUMN message_count INTEGER;
+          CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
+            source TEXT PRIMARY KEY,
+            last_rowid INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+          );
         `,
       },
     ];

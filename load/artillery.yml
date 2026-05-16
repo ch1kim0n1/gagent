@@ -1,0 +1,15 @@
+config:
+  target: "http://localhost:3000"
+  phases:
+    - duration: 60
+      arrivalRate: 2
+      rampTo: 10
+  ensure:
+    thresholds:
+      - http.response_time.p95: 30000
+      - http.codes.500: 0
+scenarios:
+  - name: "health-readiness"
+    flow:
+      - get:
+          url: "/health"

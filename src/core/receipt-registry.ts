@@ -5,6 +5,7 @@ import * as os from 'os';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
 import { coreLogger } from './observability.js';
 import { getDefaultSecretManager } from './security.js';
+import { defaultDyadRedactor } from './pii-redactor.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -30,6 +31,12 @@ function redactPII(receipt: any): any {
 
   const redacted = { ...receipt };
   const hashFields = new Set(['receipt_id', 'rubric_sha8', 'input_hash', 'config_hash', 'corpus_sha8']);
+  const dyadRedactionEnabled = process.env.DYAD_PII_REDACTION !== 'false';
+  const dyadRedactor = defaultDyadRedactor();
+
+  if (!dyadRedactionEnabled) {
+    coreLogger.warn('DYAD PII redaction is disabled for development use');
+  }
   
   // Redact email addresses
   if (redacted.user_email) {
@@ -51,6 +58,8 @@ function redactPII(receipt: any): any {
       // Redact potential API keys (32+ char alphanumeric strings)
       if (redacted[key].length >= 32 && /^[a-zA-Z0-9]+$/.test(redacted[key])) {
         redacted[key] = '[REDACTED]';
+      } else if (dyadRedactionEnabled) {
+        redacted[key] = dyadRedactor.redactText(redacted[key]);
       }
     } else if (typeof redacted[key] === 'object' && redacted[key] !== null) {
       redacted[key] = redactPII(redacted[key]);

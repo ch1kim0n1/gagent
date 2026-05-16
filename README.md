@@ -45,6 +45,7 @@ npm run docs:api
 | `gagent secrets list`, `secrets rotate` | Inspect secret metadata and rotate local secrets without printing values. |
 | `gagent serve` | Start the MCP server. |
 | `gagent backup`, `restore`, `export` | Manage persisted state and portable artifacts. |
+| `gagent benchmark` | Run tracked local latency and memory benchmarks. |
 | `gagent eval`, `replay`, `receipts`, `diff` | Record, replay, and inspect execution evidence. |
 | `gagent registry`, `models`, `tier`, `cost` | Inspect tools, model tiers, and budget state. |
 | `gagent trend`, `regress`, `drift`, `metrics` | Analyze quality, regressions, drift, and observability. |
@@ -114,6 +115,8 @@ Common environment variables:
 | `GAGENT_HEALTH_RATE_LIMIT_RPM` | Public health endpoint per-client request limit. |
 | `GAGENT_HEALTH_SHUTDOWN_TOKEN` | Legacy fallback for the health shutdown secret. |
 | `GAGENT_HEALTH_WEBHOOK_URL` | Send health-drop webhooks. |
+| `GAGENT_MAX_CONCURRENCY`, `GAGENT_MAX_QUEUE_DEPTH` | Overall pipeline concurrency and backpressure queue limits. |
+| `GAGENT_CONTEXT_CACHE_TTL_MS` | TTL for cached GBrain context lookups. |
 | `GAGENT_LLM_CALL_RESERVE_USD` | Per-call budget reservation. |
 | `GAGENT_BUDGET_RESERVATION_TTL_MS` | Reservation expiration window. |
 | `RECEIPT_SIGNATURE_KEY` | HMAC key for signed receipts. |
@@ -136,6 +139,7 @@ Common environment variables:
 | [Runbook](docs/runbook.md) | Operator workflows and routine maintenance. |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Known failure modes and fixes. |
 | [Security model](docs/SECURITY_MODEL.md) | Trust boundaries, secret handling, and audit posture. |
+| [Performance](docs/PERFORMANCE.md) | Benchmarks, load tests, SLO/SLI, backpressure, streaming, cancellation, and caching. |
 | [Data flow](docs/DATA_FLOW.md) | Mermaid architecture and persistence flow. |
 | [Integration guide](docs/INTEGRATION.md) | Embedding GAgent in projects and agent clients. |
 | [Migrations](MIGRATIONS.md) | Schema and state migration process. |

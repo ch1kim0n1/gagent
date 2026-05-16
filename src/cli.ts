@@ -8,6 +8,8 @@ import { Pipeline } from './pipeline/orchestrator.js';
 import { startMcpServer } from './mcp/server.js';
 import { GAgentPersistenceManager } from './core/gagent-persistence.js';
 import { getDefaultSecretManager, sanitizeCliFloat, sanitizeCliInteger, sanitizeCliString } from './core/security.js';
+import { BenchmarkSample, memorySnapshotMb, summarizeBenchmark } from './core/performance.js';
+import { createIMessageDaemon } from './modes/imessage-daemon.js';
 
 const config = new GAgentConfig();
 const registry = new ToolRegistry(config);
@@ -296,6 +298,86 @@ program
         console.log(`  Error: ${result.error}`);
       }
     }
+  });
+
+program
+  .command('benchmark')
+  .description('Run tracked performance benchmarks')
+  .option('--n <number>', 'Number of benchmark runs', '10')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    const n = sanitizeCliInteger(options.n, '--n', 1, 100);
+    const samples: BenchmarkSample[] = [];
+    for (let i = 0; i < n; i++) {
+      const started = performance.now();
+      let success = false;
+      try {
+        registry.listTools();
+        pipeline.getTaskProcessingStats();
+        success = true;
+      } catch {
+        success = false;
+      }
+      samples.push({
+        name: `control-plane-${i + 1}`,
+        duration_ms: Number((performance.now() - started).toFixed(2)),
+        success,
+        ...memorySnapshotMb(),
+      });
+    }
+    const result = {
+      status: 'completed',
+      n,
+      summary: summarizeBenchmark(samples),
+      samples,
+    };
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (!options.quiet) {
+      console.log(chalk.blue.bold('[GAgent] Benchmark completed'));
+      console.log(chalk.gray(`p50=${result.summary.p50_ms}ms p95=${result.summary.p95_ms}ms success=${(result.summary.success_rate * 100).toFixed(1)}% maxRSS=${result.summary.max_rss_mb}MB`));
+    }
+    process.exit(result.summary.success_rate === 1 ? 0 : 1);
+  });
+
+program
+  .command('daemon')
+  .description('Run a continuous ingestion daemon')
+  .option('--source <source>', 'Daemon source: imessage', 'imessage')
+  .option('--interval <ms>', 'Polling interval in milliseconds', '5000')
+  .option('--dry-run', 'Log new messages without downstream processing')
+  .option('--chat-db <path>', 'Override iMessage chat.db path')
+  .action(async (options) => {
+    const source = sanitizeCliString(options.source, '--source', 32);
+    const intervalMs = sanitizeCliInteger(options.interval, '--interval', 100, 60 * 60 * 1000);
+    if (source !== 'imessage') {
+      console.error(chalk.red('[GAgent] only --source imessage is currently supported'));
+      process.exit(1);
+    }
+
+    const persistence = new GAgentPersistenceManager();
+    const daemon = createIMessageDaemon(persistence, {
+      intervalMs,
+      dryRun: Boolean(options.dryRun),
+      chatDbPath: options.chatDb ? sanitizeCliString(options.chatDb, '--chat-db', 4096) : undefined,
+      onMessage: async (message) => {
+        console.log(JSON.stringify({ source, rowid: message.rowid, participant_id: message.participant_id }));
+      },
+    });
+
+    process.on('SIGINT', async () => {
+      await daemon.stop();
+      persistence.close();
+      process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+      await daemon.stop();
+      persistence.close();
+      process.exit(0);
+    });
+
+    await daemon.start();
   });
 
 program

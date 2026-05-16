@@ -101,6 +101,17 @@ export const MODEL_TIERS = {
   tier3: 'claude-opus-4-7',
 };
 
+export const MODEL_RESOLUTION_CHAIN = [
+  { tier: 'tier1', source: 'explicit_task_model', model: undefined },
+  { tier: 'tier1', source: 'winning_gbrain_config', model: undefined },
+  { tier: 'tier1', source: 'task_type_default', model: MODEL_TIERS.tier1 },
+  { tier: 'tier1', source: 'low_cost_fast_path', model: 'gpt-4o-mini' },
+  { tier: 'tier2', source: 'quality_escalation', model: MODEL_TIERS.tier2 },
+  { tier: 'tier2', source: 'cross_vendor_consensus', model: 'gpt-4o' },
+  { tier: 'tier3', source: 'critical_decision', model: MODEL_TIERS.tier3 },
+  { tier: 'tier1', source: 'safe_fallback', model: MODEL_TIERS.tier1 },
+] as const;
+
 /**
  * Estimate cost for a model call
  */
@@ -843,8 +854,14 @@ export class LLMClient {
   /**
    * Get model by tier
    */
-  getModelByTier(tier: 'tier1' | 'tier2' | 'tier3'): string {
-    return MODEL_TIERS[tier];
+  getModelByTier(tier: 'tier1' | 'tier2' | 'tier3', preferredModel?: string): string {
+    if (preferredModel && MODEL_PRICING[preferredModel]) return preferredModel;
+    const resolved = MODEL_RESOLUTION_CHAIN.find(entry => entry.tier === tier && entry.model);
+    return resolved?.model || MODEL_TIERS[tier];
+  }
+
+  getModelResolutionChain(): typeof MODEL_RESOLUTION_CHAIN {
+    return MODEL_RESOLUTION_CHAIN;
   }
 
   private loadPersistedMetrics(): void {

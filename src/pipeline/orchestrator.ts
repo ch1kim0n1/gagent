@@ -12,6 +12,9 @@ import {
   EscalationMetrics,
   TierConfig,
   ModelTier,
+  DyadAnalysisTask,
+  DyadAnalysisTaskSchema,
+  DyadAnalysisResult,
 } from '../types/index.js';
 import {
   LLMClient,
@@ -27,6 +30,8 @@ import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
 import { GAgentObservability, LocalAuditLogger, LocalLogger, coreLogger } from '../core/observability.js';
+import { ProgressEvent, TaskBackpressureLimiter, TTLCache } from '../core/performance.js';
+import { DyadAnalysisHandler } from '../handlers/dyad-analysis-handler.js';
 
 const logger = coreLogger;
 
@@ -39,6 +44,8 @@ interface PipelineOptions {
   dryRun: boolean;
   budgetUsd?: number;
   cycles?: number;
+  signal?: AbortSignal;
+  onProgress?: (event: ProgressEvent) => void;
 }
 
 interface AttemptResult {
@@ -62,6 +69,9 @@ interface PipelineResult {
   winner?: AttemptResult;
   attempts?: AttemptResult[];
   error?: string;
+  dyad_result?: DyadAnalysisResult;
+  partial_result?: unknown[];
+  cost_usd?: number;
 }
 
 interface ConsensusVote {
@@ -123,6 +133,11 @@ export class Pipeline {
   private gtomEndpoint: string;
   private glearnEndpoint: string;
   private lastConsensusSummary?: ConsensusSummary;
+  private taskLimiter: TaskBackpressureLimiter;
+  private contextCache: TTLCache<string, any>;
+  private maxConcurrency: number;
+  private activeRunBudget?: { maxCostUsd: number; startCostUsd: number; partialResults: unknown[] };
+  private warnedMissingBudget = false;
 
   constructor(registry: ToolRegistry, config: GAgentConfig, multiModelConfig?: MultiModelConfig, llmConfig?: LLMClientConfig, gbrainConfig?: GBrainIntegrationConfig) {
     this.registry = registry;
@@ -136,6 +151,9 @@ export class Pipeline {
     this.gmirrorEndpoint = process.env.GMIRROR_ENDPOINT || 'http://localhost:3003';
     this.gtomEndpoint = process.env.GTOM_ENDPOINT || 'http://localhost:3004';
     this.glearnEndpoint = process.env.GLEARN_ENDPOINT || 'http://localhost:3005';
+    this.maxConcurrency = Number(process.env.GAGENT_MAX_CONCURRENCY || '5');
+    this.taskLimiter = new TaskBackpressureLimiter(this.maxConcurrency, Number(process.env.GAGENT_MAX_QUEUE_DEPTH || this.maxConcurrency * 4));
+    this.contextCache = new TTLCache<string, any>(256, Number(process.env.GAGENT_CONTEXT_CACHE_TTL_MS || 5 * 60 * 1000));
     
     this.gbrainClient = new GBrainIntegrationClient({
       endpoint: this.gbrainEndpoint,
@@ -279,7 +297,29 @@ export class Pipeline {
     });
     const tier1StartTime = Date.now();
     const runStartCostUsd = this.llmClient.getTotalCostUsd();
+    const releaseProcessingSlot = await this.taskLimiter.acquire(options.signal);
+    const previousRunBudget = this.activeRunBudget;
+    if (options.budgetUsd !== undefined) {
+      this.activeRunBudget = {
+        maxCostUsd: options.budgetUsd,
+        startCostUsd: runStartCostUsd,
+        partialResults: [],
+      };
+    } else {
+      this.activeRunBudget = undefined;
+      if (!this.warnedMissingBudget) {
+        this.logger.warn('No per-run budget was supplied; cost hard gate enforcement is disabled for this run');
+        this.warnedMissingBudget = true;
+      }
+    }
+    this.emitProgress(options.onProgress, {
+      phase: 'queued',
+      message: 'Pipeline accepted by processing limiter',
+      progress: 0.02,
+      metadata: this.taskLimiter.getStats(),
+    });
     try {
+      this.throwIfCancelled(options.signal);
       // Check budget before execution
       if (options.budgetUsd !== undefined && this.escalationMetrics.budget_remaining_usd < options.budgetUsd) {
         const latencyMs = performance.now() - start;
@@ -307,13 +347,47 @@ export class Pipeline {
         };
       }
 
+      const dyadTask = this.tryParseDyadTask(options.task, options.budgetUsd);
+      if (dyadTask) {
+        const dyadResult = await new DyadAnalysisHandler(this.llmClient).execute(dyadTask);
+        const output = JSON.stringify(dyadResult, null, 2);
+        const runId = uuidv4();
+        this.persistenceManager.addAgentRun({
+          run_id: runId,
+          task: options.task,
+          output,
+          exit_code: dyadResult.partial_result || dyadResult.ethical_refusal?.should_refuse ? 1 : 0,
+          cost_usd: dyadResult.cost_usd,
+          dyad_id: dyadTask.parameters.dyad_id,
+          message_count: dyadTask.parameters.message_window.length,
+        });
+        const attempt = {
+          id: 'dyad-analysis',
+          output,
+          score: dyadResult.partial_result || dyadResult.ethical_refusal?.should_refuse ? 0 : 1,
+        };
+        this.observability.tracer.endSpan(span, dyadResult.partial_result ? new Error('DYAD partial result') : undefined);
+        return {
+          success: !dyadResult.partial_result && !dyadResult.ethical_refusal?.should_refuse,
+          winner: attempt,
+          attempts: [attempt],
+          dyad_result: dyadResult,
+          cost_usd: dyadResult.cost_usd,
+        };
+      }
+
       // Stage 1: Prime
+      this.emitProgress(options.onProgress, { phase: 'prime', message: 'Loading GBrain context', progress: 0.12 });
       const context = await this.primeBrain(options.task);
+      this.throwIfCancelled(options.signal);
 
       // LLM-driven decision: Select execution strategy
+      this.emitProgress(options.onProgress, { phase: 'plan', message: 'Selecting execution strategy', progress: 0.24 });
       const executionDecision = await this.llmDecisionExecutionStrategy(options.task, context);
+      this.throwIfCancelled(options.signal);
       
       // Stage 2: Execute (Tier 1)
+      this.emitProgress(options.onProgress, { phase: 'execute', message: 'Executing selected tool path', progress: 0.42, metadata: { maxConcurrency: this.maxConcurrency } });
       let attempts: AttemptResult[];
       if (executionDecision.parallel > 1) {
         attempts = await this.runParallel(options.task, executionDecision.parallel, context);
@@ -403,7 +477,9 @@ export class Pipeline {
       // LLM-driven decision: Verify
       const shouldVerify = await this.llmDecisionVerify(attempts);
       if (shouldVerify && options.verify) {
+        this.emitProgress(options.onProgress, { phase: 'verify', message: 'Verifying attempts with GMirror', progress: 0.64 });
         for (const attempt of attempts) {
+          this.throwIfCancelled(options.signal);
           attempt.verification = await this.verifyWithMirror(attempt);
         }
       }
@@ -411,19 +487,24 @@ export class Pipeline {
       // LLM-driven decision: Cognitive check
       const shouldCheck = await this.llmDecisionCognitiveCheck(attempts);
       if (shouldCheck && options.cognitiveCheck) {
+        this.emitProgress(options.onProgress, { phase: 'cognitive_check', message: 'Running GToM cognitive check', progress: 0.72 });
         for (const attempt of attempts) {
+          this.throwIfCancelled(options.signal);
           attempt.cognitiveCheck = await this.checkWithToM(attempt);
         }
       }
 
       // Stage 5: Select winner
+      this.emitProgress(options.onProgress, { phase: 'select', message: 'Selecting winning attempt', progress: 0.82 });
       const winner = await this.selectWinner(attempts, options);
 
       // Write to GBrain
+      this.emitProgress(options.onProgress, { phase: 'persist', message: 'Persisting run evidence', progress: 0.9 });
       await this.recordToBrain(options.task, winner, attempts);
 
       // Stage 6: Learn (if enabled)
       if (options.learn) {
+        this.emitProgress(options.onProgress, { phase: 'learn', message: 'Capturing learning signal', progress: 0.94 });
         await this.captureToLearn(options.task, winner, attempts);
       }
 
@@ -468,6 +549,7 @@ export class Pipeline {
         },
       });
       this.observability.tracer.endSpan(span);
+      this.emitProgress(options.onProgress, { phase: 'complete', message: 'Pipeline execution complete', progress: 1 });
       return {
         success: true,
         winner,
@@ -489,11 +571,66 @@ export class Pipeline {
       });
       this.observability.tracer.endSpan(span, error instanceof Error ? error : new Error(String(error)));
       this.persistenceManager.saveEscalationMetrics(this.escalationMetrics);
+      if (options.signal?.aborted) {
+        this.emitProgress(options.onProgress, { phase: 'cancelled', message: 'Pipeline execution cancelled', progress: 1 });
+      }
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        partial_result: (error as any)?.partialResults,
+        cost_usd: (error as any)?.actualCostUsd,
       };
+    } finally {
+      this.activeRunBudget = previousRunBudget;
+      releaseProcessingSlot();
     }
+  }
+
+  async *executeStream(options: PipelineOptions): AsyncGenerator<ProgressEvent | { phase: 'result'; result: PipelineResult }, void, unknown> {
+    const events: ProgressEvent[] = [];
+    let notify: (() => void) | undefined;
+    let done = false;
+    const resultPromise = this.execute({
+      ...options,
+      onProgress: (event) => {
+        options.onProgress?.(event);
+        events.push(event);
+        notify?.();
+      },
+    }).then((result) => {
+      done = true;
+      notify?.();
+      return result;
+    }).catch((error) => {
+      done = true;
+      notify?.();
+      throw error;
+    });
+
+    while (!done || events.length > 0) {
+      if (events.length === 0) {
+        await new Promise<void>(resolve => { notify = resolve; });
+        notify = undefined;
+        continue;
+      }
+      yield events.shift()!;
+    }
+    yield { phase: 'result', result: await resultPromise };
+  }
+
+  getTaskProcessingStats(): { active: number; queued: number; maxConcurrency: number; maxQueueDepth: number } {
+    return this.taskLimiter.getStats();
+  }
+
+  private emitProgress(
+    callback: ((event: ProgressEvent) => void) | undefined,
+    event: Omit<ProgressEvent, 'timestamp'>,
+  ): void {
+    callback?.({ ...event, timestamp: new Date().toISOString() });
+  }
+
+  private throwIfCancelled(signal?: AbortSignal): void {
+    if (signal?.aborted) throw new Error('Pipeline execution cancelled');
   }
 
   /**
@@ -549,10 +686,47 @@ export class Pipeline {
           },
         });
       });
+      this.enforceActiveRunBudget(operation);
       return result;
     } catch (error) {
       this.budgetLedger.release(reservation.id);
       throw error;
+    }
+  }
+
+  private enforceActiveRunBudget(operation: string): void {
+    if (!this.activeRunBudget) {
+      return;
+    }
+    const actualCostUsd = this.llmClient.getTotalCostUsd() - this.activeRunBudget.startCostUsd;
+    this.activeRunBudget.partialResults.push({ operation, actual_cost_usd: actualCostUsd });
+    if (actualCostUsd > this.activeRunBudget.maxCostUsd) {
+      const error = new Error(
+        `Cost hard gate: $${actualCostUsd.toFixed(4)} exceeds budget $${this.activeRunBudget.maxCostUsd.toFixed(4)}`,
+      ) as Error & { actualCostUsd: number; maxCostUsd: number; partialResults: unknown[] };
+      error.actualCostUsd = actualCostUsd;
+      error.maxCostUsd = this.activeRunBudget.maxCostUsd;
+      error.partialResults = [...this.activeRunBudget.partialResults];
+      throw error;
+    }
+  }
+
+  private tryParseDyadTask(taskText: string, budgetUsd?: number): DyadAnalysisTask | null {
+    try {
+      const parsed = JSON.parse(taskText);
+      const task = DyadAnalysisTaskSchema.parse(parsed);
+      if (!task.budget && budgetUsd !== undefined) {
+        return {
+          ...task,
+          budget: {
+            max_cost_usd: budgetUsd,
+            max_latency_ms: 60_000,
+          },
+        };
+      }
+      return task;
+    } catch {
+      return null;
     }
   }
 
@@ -679,13 +853,19 @@ Return a JSON object with the decision, e.g.:
       return null;
     }
 
+    const cached = this.contextCache.get(task);
+    if (cached !== undefined) return cached;
+
     try {
-      return await this.gbrainClient.searchContext(task);
+      const context = await this.gbrainClient.searchContext(task);
+      this.contextCache.set(task, context);
+      return context;
     } catch (error) {
       logger.warn('GBrain context lookup unavailable; continuing without primed context', {
         error: error instanceof Error ? error.message : String(error),
         circuit: this.gbrainClient.getCircuitState(),
       });
+      this.contextCache.set(task, null);
       return null;
     }
   }
@@ -713,8 +893,9 @@ Return a JSON object with the decision, e.g.:
     }
     
     const { execAsync } = this.getExec();
+    const attempts = Math.max(1, Math.min(n, this.maxConcurrency));
     const { stdout } = await execAsync(
-      `gorchestrator dispatch --task "${task}" --attempts ${n} --json`
+      `gorchestrator dispatch --task "${task}" --attempts ${attempts} --json`
     );
     
     return JSON.parse(stdout);
