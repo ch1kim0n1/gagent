@@ -74,9 +74,11 @@ export class GBrainIntegrationClient {
   private readonly circuitBreakerCooldownMs: number;
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
+  private readonly enabled: boolean;
 
   constructor(config: GBrainIntegrationConfig = {}) {
     const secrets = getDefaultSecretManager();
+    this.enabled = process.env.GBRAIN_ENABLED !== 'false';
     this.endpoint = trimTrailingSlash(config.endpoint || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000');
     this.mcpEndpoint = trimTrailingSlash(config.mcpEndpoint || process.env.GBRAIN_MCP_ENDPOINT || `${this.endpoint}/mcp`);
     this.mode = config.mode || (process.env.GBRAIN_INTEGRATION_MODE as GBrainIntegrationMode | undefined) || 'http';
@@ -89,6 +91,7 @@ export class GBrainIntegrationClient {
   }
 
   async healthCheck(): Promise<{ ok?: boolean; status?: string }> {
+    if (!this.enabled) return { healthy: true, latency_ms: 0 } as any;
     if (this.mode === 'mcp') {
       return this.callMcpTool('gbrain.health', {}, HealthSchema);
     }
@@ -96,6 +99,7 @@ export class GBrainIntegrationClient {
   }
 
   async searchContext(query: string): Promise<GBrainPage[]> {
+    if (!this.enabled) return [];
     if (this.mode === 'mcp') {
       return this.callMcpTool('gbrain.search_pages', { query, tags: ['gagent'] }, PageArraySchema);
     }
@@ -108,6 +112,7 @@ export class GBrainIntegrationClient {
     content: string;
     tags?: string[];
   }): Promise<{ page_id?: string; id?: string }> {
+    if (!this.enabled) return { page_id: 'disabled', id: 'disabled' };
     const payload = z.object({
       title: z.string(),
       content: z.string(),

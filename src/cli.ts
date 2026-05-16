@@ -10,6 +10,8 @@ import { GAgentPersistenceManager } from './core/gagent-persistence.js';
 import { getDefaultSecretManager, sanitizeCliFloat, sanitizeCliInteger, sanitizeCliString } from './core/security.js';
 import { BenchmarkSample, memorySnapshotMb, summarizeBenchmark } from './core/performance.js';
 import { createIMessageDaemon } from './modes/imessage-daemon.js';
+import { runLlmCommand } from './commands/run-llm.js';
+import { historyCommand } from './commands/history.js';
 
 const config = new GAgentConfig();
 const registry = new ToolRegistry(config);
@@ -1337,5 +1339,37 @@ _arguments '1:command:(${commands.join(' ')})' '*::option:(${options.join(' ')})
 
   return null;
 }
+
+program
+  .command('llm-run <task>')
+  .description('Run a task directly via LLM (no external services required, only ANTHROPIC_API_KEY)')
+  .option('-m, --model <model>', 'LLM model', 'claude-haiku-4-5-20251001')
+  .option('-t, --max-tokens <n>', 'Max output tokens', (v: string) => parseInt(v, 10), 2048)
+  .option('-s, --system <prompt>', 'System prompt override')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Print only the output, no metadata')
+  .action(async (task: string, opts: any) => {
+    await runLlmCommand(task, {
+      model: opts.model,
+      maxTokens: opts.maxTokens,
+      system: opts.system,
+      json: opts.json ?? false,
+      quiet: opts.quiet ?? false,
+    });
+  });
+
+program
+  .command('history')
+  .description('Show recent runs from local SQLite history')
+  .option('-n, --limit <n>', 'Number of runs to show', (v: string) => parseInt(v, 10), 20)
+  .option('--failed', 'Show only failed runs')
+  .option('--json', 'Output as JSON')
+  .action(async (opts: any) => {
+    await historyCommand({
+      limit: opts.limit,
+      json: opts.json ?? false,
+      failed: opts.failed ?? false,
+    });
+  });
 
 program.parse();
