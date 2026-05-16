@@ -13,9 +13,16 @@ import { createIMessageDaemon } from './modes/imessage-daemon.js';
 import { runLlmCommand } from './commands/run-llm.js';
 import { historyCommand } from './commands/history.js';
 
-const config = new GAgentConfig();
-const registry = new ToolRegistry(config);
-const pipeline = new Pipeline(registry, config);
+let _config: GAgentConfig | null = null;
+let _registry: ToolRegistry | null = null;
+let _pipeline: Pipeline | null = null;
+
+function getServices(): { config: GAgentConfig; registry: ToolRegistry; pipeline: Pipeline } {
+  if (!_config) _config = new GAgentConfig();
+  if (!_registry) _registry = new ToolRegistry(_config);
+  if (!_pipeline) _pipeline = new Pipeline(_registry, _config);
+  return { config: _config, registry: _registry, pipeline: _pipeline };
+}
 
 program
   .name('gagent')
@@ -31,26 +38,27 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { config, registry } = getServices();
     const detected = await registry.detectAll();
-    
+
     if (options.json) {
       console.log(JSON.stringify(detected, null, 2));
       return;
     }
-    
+
     if (!options.quiet) {
       console.log(chalk.blue('GAgent Initialization'));
       console.log('');
-      
+
       console.log('Detected tools:');
       for (const [name, info] of Object.entries(detected)) {
-        const status = info.installed 
-          ? chalk.green('✓') 
+        const status = info.installed
+          ? chalk.green('✓')
           : chalk.yellow('○');
         console.log(`  ${status} ${name}: ${info.version || 'unknown'}`);
       }
     }
-    
+
     if (!options.detectOnly) {
       if (!options.quiet) {
         console.log('');
@@ -69,6 +77,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { registry } = getServices();
     const health = await registry.healthCheck();
     
     if (options.json) {
@@ -234,6 +243,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (task, options) => {
+    const { pipeline } = getServices();
     let cleanTask: string;
     let parallel: number;
     let cycles: number;
@@ -309,6 +319,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { registry, pipeline } = getServices();
     const n = sanitizeCliInteger(options.n, '--n', 1, 100);
     const samples: BenchmarkSample[] = [];
     for (let i = 0; i < n; i++) {
@@ -391,6 +402,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { registry } = getServices();
     const mode = options.full ? 'full' : 'incremental';
     if (!options.quiet) {
       console.log(chalk.blue(`Syncing all tools (${mode}${options.dryRun ? ', dry run' : ''})...`));
@@ -420,6 +432,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { config } = getServices();
     if (options.get) {
       const value = config.get(options.get);
       if (options.json) {
@@ -469,6 +482,7 @@ program
     if (!options.quiet) {
       console.log(chalk.blue('Starting GAgent MCP server...'));
     }
+    const { registry, config } = getServices();
     await startMcpServer(registry, config, port?.toString());
   });
 
@@ -489,6 +503,7 @@ for (const tool of tools) {
     .description(`Passthrough to ${toolMap[tool]}`)
     .allowUnknownOption()
     .action(async (args, _cmd, fullCmd) => {
+      const { registry } = getServices();
       const toolName = toolMap[tool];
       const result = await registry.runTool(toolName, args || [], fullCmd.args);
       process.exit(result.exitCode);
@@ -554,6 +569,7 @@ program
       return;
     }
 
+    const { pipeline } = getServices();
     console.log(chalk.blue('[GAgent] Running evaluation'));
 
     try {
@@ -725,6 +741,7 @@ program
           process.exit(1);
         }
 
+        const { pipeline } = getServices();
         const result = await pipeline.execute({
           task,
           parallel: (targetReceipt as any).metadata?.parallel || (targetReceipt as any).options?.parallel || 1,
@@ -835,6 +852,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { config } = getServices();
     const toolStatus = tools.map((tool) => ({
       tool,
       enabled: config.isToolEnabled(tool),
@@ -868,6 +886,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action((options) => {
+    const { config } = getServices();
     const models = {
       tier1: config.get('models.tier1') || process.env.GAGENT_TIER1_MODEL || 'claude-haiku-4-5-20251001',
       tier2: config.get('models.tier2') || process.env.GAGENT_TIER2_MODEL || 'claude-sonnet-4-6',
@@ -891,6 +910,7 @@ program
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { config } = getServices();
     const validTiers = ['tier1', 'tier2', 'tier3'];
     if (options.set) {
       if (!validTiers.includes(options.set)) {
@@ -1169,6 +1189,7 @@ program
   .option('--json', 'Output observability snapshot as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
+    const { pipeline } = getServices();
     const format = options.json ? 'json' : String(options.format || 'prometheus').toLowerCase();
     if (format === 'prometheus') {
       if (!options.quiet) console.log(pipeline.exportPrometheusMetrics());
