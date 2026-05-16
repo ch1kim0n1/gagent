@@ -34,6 +34,7 @@ import { GAgentObservability, LocalAuditLogger, LocalLogger, coreLogger } from '
 import { ProgressEvent, TaskBackpressureLimiter, TTLCache } from '../core/performance.js';
 import { DyadAnalysisHandler } from '../handlers/dyad-analysis-handler.js';
 import { PIIRedactor } from '../core/pii-redactor.js';
+import { EthicalRefusalClassifier } from '../core/ethical-refusal-classifier.js';
 
 const logger = coreLogger;
 
@@ -288,9 +289,22 @@ export class Pipeline {
         temperature: 0.7,
       });
       
-      // Apply ethical refusal check (if available in gagent)
-      // TODO: Integrate ethical classifier when available
-      
+      // Apply ethical refusal check on the sanitized task before executing
+      const ethicsClassifier = new EthicalRefusalClassifier(this.llmClient);
+      const refusal = await ethicsClassifier.classify({
+        message_window: [{
+          rowid: 0,
+          text: sanitizedTask,
+          participant_id: 'user',
+          timestamp: new Date().toISOString(),
+        }],
+        proposed_insight: sanitizedTask,
+        insight_type: 'direct_execution',
+      });
+      if (refusal.should_refuse) {
+        throw new Error(`Ethical refusal (${refusal.reason}): ${refusal.explanation}`);
+      }
+
       const attempt: AttemptResult = {
         id: `direct-${Date.now()}`,
         output: llmResult.content,
