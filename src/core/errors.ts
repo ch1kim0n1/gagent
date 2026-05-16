@@ -43,3 +43,10 @@ export class TaskError extends GAgentError {
     this.name = 'TaskError';
   }
 }
+
+export class BudgetExceededError extends GAgentError {
+  constructor(message: string) {
+    super(message, 'BUDGET_EXCEEDED');
+    this.name = 'BudgetExceededError';
+  }
+}

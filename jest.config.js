@@ -2,6 +2,9 @@ const path = require('path');
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
+  testEnvironmentOptions: {
+    url: 'http://localhost',
+  },
   maxWorkers: 1,
   roots: ['<rootDir>/test'],
   testMatch: ['**/*.test.ts'],

@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { BudgetExceededError } from '../core/errors.js';
 import * as os from 'os';
 import * as path from 'path';
 const uuidv4 = (): string => crypto.randomUUID();
@@ -642,6 +643,10 @@ export class Pipeline {
     options: { model: string; temperature?: number; maxTokens?: number },
   ): Promise<LLMCallResult> {
     await this.budgetLedgerReady;
+    const budgetStatus = this.budgetLedger.getStatus();
+    if (budgetStatus.remaining_budget <= 0) {
+      throw new BudgetExceededError(`Cost hard gate: budget exceeded. Aborting task. Spent: $${budgetStatus.total_committed.toFixed(4)}, Max: $${budgetStatus.max_budget_usd.toFixed(4)}`);
+    }
     const reserveUsd = Number(process.env.GAGENT_LLM_CALL_RESERVE_USD || '0.05');
     const ttlMs = Number(process.env.GAGENT_BUDGET_RESERVATION_TTL_MS || String(5 * 60 * 1000));
     const reservation = this.budgetLedger.reserve(operation, reserveUsd, ttlMs, {
