@@ -65,6 +65,8 @@
     "benchmark": "npm run build && node dist/cli.js benchmark --n 10 --json",
     "load:k6": "k6 run load/k6.js",
     "load:artillery": "artillery run load/artillery.yml",
+    "test:mutation": "npx stryker run",
+    "test:property": "jest test/property --runInBand",
     "verify": "npm run check:all && npm run typecheck && npm test",
     "ci:local": "node scripts/quality-gates.js ci-local",
     "docs:api": "npx typedoc@0.25.13 --options typedoc.json",
@@ -89,6 +91,8 @@
     "zod": "^3.22.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^8.2.0",
+    "@stryker-mutator/jest-runner": "^8.2.0",
     "@types/better-sqlite3": "^7.6.8",
     "@types/jest": "^29.5.14",
     "@types/node": "^20.0.0",
@@ -96,6 +100,7 @@
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.1",
     "eslint-plugin-security": "^3.0.1",
+    "fast-check": "^3.14.0",
     "jest": "^29.7.0",
     "prettier": "^3.8.3",
     "ts-jest": "^29.4.9",

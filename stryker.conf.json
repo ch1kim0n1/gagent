@@ -1,0 +1,46 @@
+{
+  "$schema": "@stryker-mutator/core/schema",
+  "mutator": "typescript",
+  "packageManager": "npm",
+  "testRunner": "jest",
+  "testRunnerNodeArgs": [
+    "--experimental-vm-modules"
+  ],
+  "reporters": [
+    "progress",
+    "clear-text",
+    "html",
+    "json"
+  ],
+  "plugins": [
+    "@stryker-mutator/jest-runner"
+  ],
+  "coverageAnalysis": "perTest",
+  "tempDirName": "stryker-tmp",
+  "maxConcurrentTestRunners": 2,
+  "timeoutMS": 60000,
+  "jest": {
+    "configFile": "jest.config.js",
+    "projectType": "custom"
+  },
+  "mutate": [
+    "src/**/*.ts",
+    "!src/**/*.d.ts",
+    "!src/**/*.interface.ts",
+    "!src/**/*.type.ts",
+    "!src/**/*.test.ts",
+    "!src/**/*.spec.ts"
+  ],
+  "thresholds": {
+    "high": 80,
+    "low": 70,
+    "break": 60
+  },
+  "ignorePatterns": [
+    "node_modules",
+    "dist",
+    "coverage",
+    "stryker-tmp",
+    ".git"
+  ]
+}

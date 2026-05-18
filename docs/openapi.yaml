@@ -1,0 +1,572 @@
+openapi: 3.0.3
+info:
+  title: GAgent API
+  description: |
+    GAgent is the unified CLI, MCP server, and local control plane for the six-tool agent stack.
+    It routes tasks through the stack, records execution receipts, tracks budget and drift,
+    and exposes the same workflow to shell users and agent clients.
+  version: 1.0.0
+  contact:
+    name: G-Stack Team
+    url: https://github.com/gstack/gagent
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3001
+    description: Local development server
+  - url: https://api.gagent.gstack.dev
+    description: Production server
+
+tags:
+  - name: Pipeline
+    description: Task execution pipeline
+  - name: Health
+    description: Health and status endpoints
+  - name: Metrics
+    description: Observability and metrics
+  - name: Config
+    description: Configuration management
+  - name: Receipts
+    description: Execution receipts and audit
+
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      description: Returns 200 if the service is alive
+      operationId: getLiveness
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Service is not healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health/ready:
+    get:
+      summary: Readiness probe
+      description: Returns 200 if the service is ready to accept traffic
+      operationId: getReadiness
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessStatus'
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pipeline/run:
+    post:
+      summary: Run a task through the pipeline
+      description: Execute a task with optional parallel execution, verification, and learning capture
+      operationId: runTask
+      tags:
+        - Pipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PipelineRequest'
+      responses:
+        '200':
+          description: Task completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pipeline/status/{runId}:
+    get:
+      summary: Get pipeline run status
+      description: Retrieve the status of a pipeline run
+      operationId: getPipelineStatus
+      tags:
+        - Pipeline
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pipeline run status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineResponse'
+        '404':
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /receipts:
+    get:
+      summary: List execution receipts
+      description: Retrieve execution receipts with optional filtering
+      operationId: listReceipts
+      tags:
+        - Receipts
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [success, failure, pending]
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: List of receipts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  receipts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Receipt'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+
+  /receipts/{receiptId}:
+    get:
+      summary: Get receipt details
+      description: Retrieve detailed information about a specific receipt
+      operationId: getReceipt
+      tags:
+        - Receipts
+      parameters:
+        - name: receiptId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Receipt details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
+        '404':
+          description: Receipt not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /drift:
+    get:
+      summary: Get drift metrics
+      description: Retrieve quality drift metrics
+      operationId: getDrift
+      tags:
+        - Metrics
+      responses:
+        '200':
+          description: Drift metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriftMetrics'
+
+  /cost:
+    get:
+      summary: Get cost statistics
+      description: Retrieve budget and cost statistics
+      operationId: getCostStats
+      tags:
+        - Metrics
+      parameters:
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Cost statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostStats'
+
+  /metrics:
+    get:
+      summary: Get metrics
+      description: Return Prometheus-compatible metrics
+      operationId: getMetrics
+      tags:
+        - Metrics
+      responses:
+        '200':
+          description: Metrics in Prometheus format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /config:
+    get:
+      summary: Get configuration
+      description: Retrieve current configuration
+      operationId: getConfig
+      tags:
+        - Config
+      responses:
+        '200':
+          description: Current configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Configuration'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /config:
+    put:
+      summary: Update configuration
+      description: Update configuration values
+      operationId: updateConfig
+      tags:
+        - Config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigurationUpdate'
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Configuration'
+        '400':
+          description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    ReadinessStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    PipelineRequest:
+      type: object
+      required:
+        - task
+      properties:
+        task:
+          type: string
+          description: The task to execute
+        parallel:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Number of parallel attempts
+        verify:
+          type: boolean
+          description: Enable GMirror verification
+        cognitive:
+          type: boolean
+          description: Enable GToM cognitive checks
+        learn:
+          type: boolean
+          description: Enable GLearn pattern capture
+        config:
+          type: object
+          description: Optional configuration overrides
+          additionalProperties: true
+
+    PipelineResponse:
+      type: object
+      properties:
+        runId:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled]
+        result:
+          type: object
+          properties:
+            output:
+              type: string
+            verified:
+              type: boolean
+            cognitiveScore:
+              type: number
+            patterns:
+              type: array
+              items:
+                type: object
+        receipt:
+          $ref: '#/components/schemas/Receipt'
+        costUSD:
+          type: number
+        durationMs:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        error:
+          type: string
+
+    Receipt:
+      type: object
+      properties:
+        receiptId:
+          type: string
+        runId:
+          type: string
+        task:
+          type: string
+        status:
+          type: string
+          enum: [success, failure, pending]
+        output:
+          type: string
+        verification:
+          type: object
+          properties:
+            passed:
+              type: boolean
+            score:
+              type: number
+        cognitive:
+          type: object
+          properties:
+            safe:
+              type: boolean
+            patterns:
+              type: array
+              items:
+                type: string
+        costUSD:
+          type: number
+        durationMs:
+          type: integer
+        signature:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    DriftMetrics:
+      type: object
+      properties:
+        qualityScore:
+          type: number
+          minimum: 0
+          maximum: 1
+        trend:
+          type: string
+          enum: [improving, stable, degrading]
+        regressionCount:
+          type: integer
+        lastRegression:
+          type: string
+          format: date-time
+
+    CostStats:
+      type: object
+      properties:
+        totalUSD:
+          type: number
+        averageUSD:
+          type: number
+        byModel:
+          type: object
+          additionalProperties:
+            type: number
+        byTool:
+          type: object
+          additionalProperties:
+            type: number
+        period:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+
+    Configuration:
+      type: object
+      properties:
+        endpoints:
+          type: object
+          additionalProperties:
+            type: string
+            format: uri
+        budget:
+          type: object
+          properties:
+            maxUSD:
+              type: number
+            reservationUSD:
+              type: number
+        pipeline:
+          type: object
+          properties:
+            defaultParallel:
+              type: integer
+            defaultVerify:
+              type: boolean
+            defaultCognitive:
+              type: boolean
+
+    ConfigurationUpdate:
+      type: object
+      properties:
+        endpoints:
+          type: object
+          additionalProperties:
+            type: string
+            format: uri
+        budget:
+          type: object
+          properties:
+            maxUSD:
+              type: number
+        pipeline:
+          type: object
+          properties:
+            defaultParallel:
+              type: integer
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []
