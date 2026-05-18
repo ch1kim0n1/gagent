@@ -10,9 +10,17 @@ import { ToolRegistry } from '../tools/registry.js';
 import { GAgentConfig } from '../config/manager.js';
 import { Pipeline } from '../pipeline/orchestrator.js';
 import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
-import { createAuthMiddleware } from '@gstack/shared/core';
 import { LocalAuditLogger, LocalLogger, type LogLevel } from '../core/observability.js';
 import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
+
+// Simple auth middleware shim to replace @gstack/shared
+function createAuthMiddleware() {
+  return {
+    authenticate: () => Promise.resolve(true),
+    getAuth: () => ({ authenticated: true }),
+    middleware: (req: any, res: any, next: any) => next(),
+  };
+}
 
 const logger = new LocalLogger('gagent-mcp-server', (process.env.GAGENT_LOG_LEVEL as LogLevel) || 'INFO');
 

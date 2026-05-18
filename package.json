@@ -79,7 +79,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
-    "@gstack/shared": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/pg": "^8.20.0",
     "@types/uuid": "^9.0.0",

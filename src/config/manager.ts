@@ -2,7 +2,6 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
-import { createPersistenceManager } from '@gstack/shared/core';
 
 const ConfigSchema = z.object({
   version: z.string(),
@@ -26,6 +25,17 @@ const ConfigSchema = z.object({
 });
 
 export type GAgentConfigType = z.infer<typeof ConfigSchema>;
+
+// Simple persistence manager shim to replace @gstack/shared
+function createPersistenceManager<T>(config: T, _name: string, _options: any) {
+  return {
+    init: () => Promise.resolve(),
+    save: () => Promise.resolve(),
+    load: () => Promise.resolve(config),
+    updateState: (state: Partial<T>) => Promise.resolve(),
+    getState: () => Promise.resolve(config),
+  };
+}
 
 export class GAgentConfig {
   private configPath: string;

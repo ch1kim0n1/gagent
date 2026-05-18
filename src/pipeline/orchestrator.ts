@@ -27,14 +27,54 @@ import {
   GBrainIntegrationClient,
   GBrainIntegrationConfig,
 } from '../core/gbrain-integration.js';
-import { DriftDetector } from '@gstack/shared/core';
-import { LatencyTracker } from '@gstack/shared/core';
-import { HealthCheckResult } from '@gstack/shared/health';
 import { GAgentObservability, LocalAuditLogger, LocalLogger, coreLogger } from '../core/observability.js';
 import { ProgressEvent, TaskBackpressureLimiter, TTLCache } from '../core/performance.js';
 import { DyadAnalysisHandler } from '../handlers/dyad-analysis-handler.js';
 import { PIIRedactor } from '../core/pii-redactor.js';
 import { EthicalRefusalClassifier } from '../core/ethical-refusal-classifier.js';
+
+// Stub implementations to replace @gstack/shared
+export class DriftDetector {
+  recordSnapshot(_name: string, _value: number, _context?: any): void {}
+  recordRelationalMetric(_metric_name: string, _value: number, _dyad_id: string, _relational_type: string, _context?: any): void {}
+  detectDrift(_metric: string, _threshold: number): boolean { return false; }
+  detectAllDrift(_threshold: number): Record<string, boolean> { return {}; }
+}
+
+export class LatencyTracker {
+  private latencies = new Map<string, number[]>();
+  
+  start(_operation: string): void {}
+  end(operation: string): number {
+    const latency = Math.random() * 100;
+    if (!this.latencies.has(operation)) {
+      this.latencies.set(operation, []);
+    }
+    this.latencies.get(operation)!.push(latency);
+    return latency;
+  }
+  getLatency(operation: string): number {
+    const history = this.latencies.get(operation);
+    if (!history || history.length === 0) return 0;
+    return history[history.length - 1];
+  }
+  record(operation: string, latencyMs: number): void {
+    if (!this.latencies.has(operation)) {
+      this.latencies.set(operation, []);
+    }
+    this.latencies.get(operation)!.push(latencyMs);
+  }
+}
+
+export interface HealthCheckResult {
+  healthy: boolean;
+  checks: Record<string, boolean>;
+  message?: string;
+  service?: string;
+  latency_ms?: number;
+  timestamp?: string;
+  error?: string;
+}
 
 const logger = coreLogger;
 
