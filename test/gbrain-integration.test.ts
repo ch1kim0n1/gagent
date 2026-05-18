@@ -1,4 +1,9 @@
-import { describe, expect, it, beforeEach } from '@jest/globals';
+// Note: switched from @jest/globals to bun:test so this file runs under both
+// `bun test` (CI) and `jest` (legacy npm script). bun:test exports a compatible
+// `jest` namespace.
+import { describe, expect, it, beforeEach, jest } from 'bun:test';
+// Re-expose `jest` as a value for any `(global.fetch as jest.Mock)` type casts to work at runtime.
+(globalThis as any).jest = jest;
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -178,11 +183,18 @@ describe('GAgent GBrain wiring', () => {
   });
 
   it('primes pipeline execution with typed GBrain context', async () => {
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ([{ page_id: 'p1', content: 'prior successful run', tags: ['gagent'] }]),
-    } as Response);
+    // Route fetch responses by URL so a background GOrchestrator health check
+    // fired from the Pipeline constructor doesn't consume the GBrain mock.
+    (global.fetch as jest.Mock).mockImplementation(async (url: string) => {
+      if (String(url).includes('/api/pages/search')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ([{ page_id: 'p1', content: 'prior successful run', tags: ['gagent'] }]),
+        } as Response;
+      }
+      return { ok: false, status: 503, json: async () => ({}) } as Response;
+    });
 
     const config = makeConfig();
     const pipeline = new Pipeline(new ToolRegistry(config), config, undefined, undefined, {

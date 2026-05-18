@@ -28,12 +28,20 @@ export type GAgentConfigType = z.infer<typeof ConfigSchema>;
 
 // Simple persistence manager shim to replace @gstack/shared
 function createPersistenceManager<T>(config: T, _name: string, _options: any) {
+  let current: T = config;
   return {
     init: () => Promise.resolve(),
     save: () => Promise.resolve(),
-    load: () => Promise.resolve(config),
-    updateState: (state: Partial<T>) => Promise.resolve(),
-    getState: () => Promise.resolve(config),
+    load: () => Promise.resolve(current),
+    updateState: (state: Partial<T> | (() => T)) => {
+      if (typeof state === 'function') {
+        current = (state as () => T)();
+      } else {
+        current = { ...(current as any), ...(state as any) };
+      }
+      return Promise.resolve();
+    },
+    getState: (): T => current,
   };
 }
 

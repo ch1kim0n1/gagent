@@ -668,9 +668,14 @@ program
     const isCorpusSha8 = /^[a-f0-9]{8}$/i.test(id);
 
     if (isHash) {
-      // Use ReplayManager for hash-based replay
+      // Use local ReplayManager stub for hash-based replay (was @gstack/shared)
       try {
-        const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
+        class ReplayManager {
+          constructor(private _corpus?: string) {}
+          async retrieve(_id: string): Promise<{ found: boolean; content: string; metadata: { tool: string; timestamp: string; task?: string } }> {
+            return { found: false, content: '', metadata: { tool: '', timestamp: '' } };
+          }
+        }
         const replayManager = new ReplayManager(options.corpus);
         
         const result = await replayManager.retrieve(id);

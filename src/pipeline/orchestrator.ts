@@ -35,15 +35,17 @@ import { EthicalRefusalClassifier } from '../core/ethical-refusal-classifier.js'
 
 // Stub implementations to replace @gstack/shared
 export class DriftDetector {
+  constructor(_options?: { window_size?: number; drift_threshold?: number; alert_threshold?: number }) {}
   recordSnapshot(_name: string, _value: number, _context?: any): void {}
   recordRelationalMetric(_metric_name: string, _value: number, _dyad_id: string, _relational_type: string, _context?: any): void {}
-  detectDrift(_metric: string, _threshold: number): boolean { return false; }
+  detectDrift(_metric: string, _threshold?: number): boolean { return false; }
   detectAllDrift(_threshold?: number): any { return []; }
 }
 
 export class LatencyTracker {
   private latencies = new Map<string, number[]>();
-  
+
+  constructor(_windowSize?: number) {}
   start(_operation: string): void {}
   end(operation: string): number {
     const latency = Math.random() * 100;
@@ -1727,11 +1729,11 @@ Return this JSON shape:
     this.latencyTracker.record(latencyMs);
     this.observability.metrics.recordPublicMethod('healthCheck', latencyMs, 'ok');
     for (const result of results) {
-      this.observability.metrics.observe('gagent_health_check_latency_ms', result.latency_ms, { service: result.service });
-      if (!result.healthy) this.observability.metrics.increment('gagent_health_check_errors_total', { service: result.service });
+      this.observability.metrics.observe('gagent_health_check_latency_ms', result.latency_ms ?? 0, { service: result.service ?? 'unknown' });
+      if (!result.healthy) this.observability.metrics.increment('gagent_health_check_errors_total', { service: result.service ?? 'unknown' });
     }
     await this.publishDailyToolStatus(results);
-    await this.observability.alertOnHealthDrop(healthScore, results);
+    await this.observability.alertOnHealthDrop(healthScore, results as HealthCheckLike[]);
     this.observability.tracer.endSpan(span);
     return results;
     } catch (error) {

@@ -36,10 +36,68 @@ export interface StoredCostEntry {
 }
 
 /**
+ * Open a SQLite database. Prefers `better-sqlite3` (Node).
+ * Falls back to `bun:sqlite` when running under Bun (e.g. `bun test`).
+ */
+function openDatabase(dbPath: string): any {
+  // Try better-sqlite3 first (Node path)
+  try {
+    const Database = require('better-sqlite3');
+    return new Database(dbPath);
+  } catch (betterErr) {
+    // Fall through to bun:sqlite
+    try {
+      // Use eval('require') to keep tsc from resolving "bun:sqlite" at compile time.
+      const requireFn: NodeRequire = (eval('require'));
+      const { Database } = requireFn('bun:sqlite');
+      const bunDb = new Database(dbPath);
+      return {
+        exec: (sql: string) => bunDb.exec(sql),
+        prepare: (sql: string) => {
+          const stmt = bunDb.prepare(sql);
+          return {
+            get: (...args: any[]) => stmt.get(...args),
+            all: (...args: any[]) => stmt.all(...args),
+            run: (...args: any[]) => stmt.run(...args),
+          };
+        },
+        pragma: (s: string) => {
+          // better-sqlite3 returns rows from pragma; bun:sqlite uses prepare().all().
+          // Some pragmas (e.g. wal_checkpoint(TRUNCATE)) may fail under exec but
+          // succeed under prepare/all; only fall back if prepare itself errors.
+          try {
+            const stmt = bunDb.prepare(`PRAGMA ${s};`);
+            try { return stmt.all(); } catch { return stmt.run(); }
+          } catch {
+            // Last-resort: try exec but don't throw; pragma is best-effort.
+            try { bunDb.exec(`PRAGMA ${s};`); } catch { /* ignore */ }
+            return undefined;
+          }
+        },
+        transaction: (fn: (...args: any[]) => any) => (...args: any[]) => {
+          bunDb.exec('BEGIN');
+          try {
+            const result = fn(...args);
+            bunDb.exec('COMMIT');
+            return result;
+          } catch (e) {
+            bunDb.exec('ROLLBACK');
+            throw e;
+          }
+        },
+        close: () => bunDb.close(),
+      };
+    } catch (_bunErr) {
+      throw betterErr;
+    }
+  }
+}
+
+/**
  * SQLite Persistence Manager for GAgent
  *
  * Stores agent run records, escalation metrics, LLM history, and cost ledger rows.
- * Persistence is REQUIRED - fails if better-sqlite3 cannot be loaded.
+ * Persistence is REQUIRED - fails if no SQLite driver can be loaded.
  */
 export class GAgentPersistenceManager {
   private db: any;
@@ -56,10 +114,9 @@ export class GAgentPersistenceManager {
     const dataDir = path.dirname(resolvedPath);
     this.backupDir = process.env.GAGENT_BACKUP_DIR || path.join(dataDir, 'backups');
     this.backupRetentionCount = Math.max(1, Number(process.env.GAGENT_BACKUP_RETENTION || '10'));
+    fs.mkdirSync(dataDir, { recursive: true });
     try {
-      const Database = require('better-sqlite3');
-      fs.mkdirSync(dataDir, { recursive: true });
-      this.db = new Database(this.dbPath);
+      this.db = openDatabase(this.dbPath);
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       this.initializeSchema();
@@ -284,9 +341,17 @@ export class GAgentPersistenceManager {
       throw new Error(`Backup does not exist: ${sourcePath}`);
     }
     this.db.close();
+    // Remove the existing DB file and any stale WAL/SHM sidecar files left by
+    // the previous connection; otherwise reopening (especially under bun:sqlite)
+    // may surface stale state or surface disk-I/O errors.
+    for (const suffix of ['', '-wal', '-shm', '-journal']) {
+      const stale = `${this.dbPath}${suffix}`;
+      if (fs.existsSync(stale)) {
+        try { fs.rmSync(stale, { force: true }); } catch { /* ignore */ }
+      }
+    }
     fs.copyFileSync(sourcePath, this.dbPath);
-    const Database = require('better-sqlite3');
-    this.db = new Database(this.dbPath);
+    this.db = openDatabase(this.dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initializeSchema();

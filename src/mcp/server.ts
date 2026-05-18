@@ -14,11 +14,35 @@ import { LocalAuditLogger, LocalLogger, type LogLevel } from '../core/observabil
 import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
 
 // Simple auth middleware shim to replace @gstack/shared
-function createAuthMiddleware() {
+interface AuthMiddlewareConfig {
+  secret: string;
+  tool: string;
+  defaultRoles: McpScope[];
+}
+
+interface AuthResult {
+  success: boolean;
+  error?: string;
+  token?: string;
+  hashToken?: string;
+  scopes?: McpScope[];
+}
+
+function createAuthMiddleware(_config: AuthMiddlewareConfig) {
   return {
-    authenticate: () => Promise.resolve(true),
-    getAuth: () => ({ authenticated: true }),
-    middleware: (req: any, res: any, next: any) => next(),
+    authenticate: (_token?: string): AuthResult => ({
+      success: true,
+      token: _token,
+      hashToken: _token ? `hash:${_token.slice(0, 8)}` : undefined,
+      scopes: _config.defaultRoles,
+    }),
+    issueToken: (_scopes: McpScope[]): AuthResult => ({
+      success: true,
+      token: 'dev-token',
+      hashToken: 'hash:dev-token',
+    }),
+    getAuth: () => ({ authenticated: true, hashToken: 'hash:dev' }),
+    middleware: (_req: any, _res: any, next: any) => next(),
   };
 }
 
@@ -394,10 +418,7 @@ export async function startMcpServer(
           }
 
           try {
-            const response = await gbrainClient.search({
-              query: parsed.data.query,
-              limit: parsed.data.limit || 10,
-            });
+            const response = await gbrainClient.searchContext(parsed.data.query);
             return {
               content: [
                 {
@@ -617,7 +638,7 @@ export async function startMcpServer(
     }
 
     const token = authHeader.replace(/^Bearer\s+/i, '');
-    const scopes = scopesForToken(token, auth.token?.roles || []);
+    const scopes = scopesForToken(token, (auth.scopes as string[] | undefined) || []);
     if (!scopes.includes(requiredScope)) {
       return { ok: false as const, error: `Insufficient permissions: requires ${requiredScope} scope` };
     }
@@ -680,7 +701,7 @@ export async function startMcpServer(
   }
 
   function tokenLabel(token: string): string {
-    return token === 'anonymous-read' ? token : `token:${authMiddleware.getAuth().hashToken(token)}`;
+    return token === 'anonymous-read' ? token : `token:${authMiddleware.getAuth().hashToken}`;
   }
 
   if (port) {

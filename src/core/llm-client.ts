@@ -774,8 +774,8 @@ export class LLMClient {
 
       // Extract text content from response
       const textContent = message.content
-        .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
-        .map(block => block.text)
+        .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+        .map(block => (block as any).text as string)
         .join('\n');
 
       return {
