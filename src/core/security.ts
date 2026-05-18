@@ -130,3 +130,50 @@ export function sanitizeCliFloat(value: unknown, field: string, min: number, max
   if (!Number.isFinite(parsed) || parsed < min || parsed > max) throw new Error(`${field} must be between ${min} and ${max}`);
   return parsed;
 }
+
+export function sanitizeFilePath(inputPath: unknown, field: string, allowedBaseDir?: string): string {
+  const text = sanitizeCliString(inputPath, field, 4096);
+
+  if (text.includes('\0')) {
+    throw new Error(`${field} contains invalid null byte`);
+  }
+
+  if (text.includes('..') || text.includes('~')) {
+    throw new Error(`${field} contains path traversal sequences`);
+  }
+
+  const resolved = path.resolve(text);
+
+  if (allowedBaseDir) {
+    const resolvedBase = path.resolve(allowedBaseDir);
+    const relative = path.relative(resolvedBase, resolved);
+
+    if (relative.startsWith('..')) {
+      throw new Error(`${field} is outside allowed directory`);
+    }
+  }
+
+  return resolved;
+}
+
+export function sanitizeReadPath(inputPath: unknown, field: string, allowedBaseDir?: string): string {
+  return sanitizeFilePath(inputPath, field, allowedBaseDir);
+}
+
+export function sanitizeWritePath(inputPath: unknown, field: string, allowedBaseDir: string): string {
+  const resolved = sanitizeFilePath(inputPath, field, allowedBaseDir);
+
+  const filename = path.basename(resolved);
+
+  if (filename.startsWith('.')) {
+    throw new Error(`${field} cannot write to hidden files`);
+  }
+
+  const sensitiveExtensions = ['.env', '.key', '.pem', '.p12', '.pfx', '.der', '.crt', '.cer'];
+  const ext = path.extname(filename).toLowerCase();
+  if (sensitiveExtensions.includes(ext)) {
+    throw new Error(`${field} cannot write to files with extension ${ext}`);
+  }
+
+  return resolved;
+}

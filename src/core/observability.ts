@@ -94,10 +94,37 @@ export const coreLogger = new LocalLogger('gagent', (process.env.GAGENT_LOG_LEVE
 
 export class LocalAuditLogger {
   private auditDir: string;
+  private retentionDays: number;
 
   constructor(private tool: string) {
     this.auditDir = process.env.GAGENT_AUDIT_DIR || path.join(os.homedir(), `.${tool}`, 'audit');
+    this.retentionDays = Number(process.env.GAGENT_LOG_RETENTION_DAYS || '7');
     fs.mkdirSync(this.auditDir, { recursive: true });
+    this.rotateOldLogs();
+  }
+
+  /**
+   * Rotate old logs based on retention policy
+   */
+  private rotateOldLogs(): void {
+    try {
+      if (!fs.existsSync(this.auditDir)) return;
+
+      const files = fs.readdirSync(this.auditDir);
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - this.retentionDays);
+
+      for (const file of files) {
+        const filePath = path.join(this.auditDir, file);
+        const stats = fs.statSync(filePath);
+
+        if (stats.isFile() && stats.mtime < cutoffDate) {
+          fs.unlinkSync(filePath);
+        }
+      }
+    } catch (error) {
+      console.error(`[LocalAuditLogger] Failed to rotate logs: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   async log(entry: {

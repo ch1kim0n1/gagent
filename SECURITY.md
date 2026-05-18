@@ -24,6 +24,31 @@ Run all quality gates:
 npm run check:all
 ```
 
+## Secret Rotation
+
+Rotate secrets regularly using the CLI:
+
+```bash
+# Rotate auth secret used for JWT token signing
+gagent secrets rotate gagent_auth_secret
+
+# Rotate MCP bootstrap token
+gagent secrets rotate gagent_mcp_token
+
+# Rotate health shutdown token
+gagent secrets rotate health_shutdown_token
+
+# List all secrets
+gagent secrets list
+```
+
+Secrets are stored in `GAGENT_SECRET_DIR` (default: `~/.gagent/secrets/`). Each rotation increments the version and records the timestamp. Rotate auth secrets:
+- Immediately if compromised or suspected compromise
+- On a regular schedule (e.g., quarterly) for production deployments
+- Before deploying to new environments
+
+After rotating `gagent_auth_secret`, restart the MCP server to use the new signing key. After rotating `gagent_mcp_token`, update any clients using the bootstrap token.
+
 ## Reporting
 
 If a secret is committed, rotate it immediately, remove it from history if needed, and add a guard to prevent recurrence.

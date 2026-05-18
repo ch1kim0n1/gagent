@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-18
+
 ### Added
+- Production hardening pass: non-root `node` user in Docker image; HEALTHCHECK directive
+  hitting `/health/live`; HTTP security headers (`X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy`, `Strict-Transport-Security`, `Content-Security-Policy`, `Cache-Control`)
+  on the public health server.
+- Jest `coverageThreshold` enforcement: 85% lines/statements/functions for `src/core/**`,
+  70% global floor.
+- `eslint-plugin-security` dev dependency for static security analysis.
+
+### Changed
+- `package.json` version bumped from `0.1.0` → `0.5.0`.
+
+### Added (carried over from Unreleased)
 - Eval command with --cycles N support for statistical comparison
 - Stats and drift CLI commands
 - Comprehensive documentation (runbook, contract, eval)

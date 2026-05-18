@@ -5,6 +5,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { ToolRegistry } from '../tools/registry.js';
 import { GAgentConfig } from '../config/manager.js';
 import { Pipeline } from '../pipeline/orchestrator.js';
@@ -293,6 +294,45 @@ export async function startMcpServer(
       return errorResponse(`Rate limit exceeded. Reset at ${rateLimit.resetAt}`);
     }
 
+    // Zod schemas for input validation
+    const RunArgsSchema = z.object({
+      task: z.string().min(1).max(10000),
+      parallel: z.number().int().positive().max(10).optional(),
+      verify: z.boolean().optional(),
+      cognitive_check: z.boolean().optional(),
+      learn: z.boolean().optional(),
+      full: z.boolean().optional(),
+    });
+
+    const ConfigGetArgsSchema = z.object({
+      key: z.string().min(1),
+    });
+
+    const ConfigSetArgsSchema = z.object({
+      key: z.string().min(1),
+      value: z.any(),
+    });
+
+    const GetReceiptsArgsSchema = z.object({
+      limit: z.number().int().positive().max(1000).optional(),
+      offset: z.number().int().nonnegative().max(10000).optional(),
+      startDate: z.string().datetime().optional(),
+      endDate: z.string().datetime().optional(),
+    });
+
+    const GetDriftArgsSchema = z.object({
+      metricName: z.string().optional(),
+    });
+
+    const GBrainSearchArgsSchema = z.object({
+      query: z.string().min(1).max(1000),
+      limit: z.number().int().positive().max(100).optional(),
+    });
+
+    const StackReviewArgsSchema = z.object({
+      path: z.string().min(1),
+    });
+
     try {
       switch (name) {
         case 'gagent_run': {
@@ -327,7 +367,7 @@ export async function startMcpServer(
           };
         }
 
-        case 'gagent_brain_search': {
+        case 'gagent_gbrain_search': {
           if (!config.isToolEnabled('gbrain')) {
             return {
               content: [
@@ -340,8 +380,16 @@ export async function startMcpServer(
             };
           }
 
+          const parsed = GBrainSearchArgsSchema.safeParse(args);
+          if (!parsed.success) {
+            return errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+          }
+
           try {
-            const response = await gbrainClient.searchContext(args.query as string);
+            const response = await gbrainClient.search({
+              query: parsed.data.query,
+              limit: parsed.data.limit || 10,
+            });
             return {
               content: [
                 {
@@ -376,19 +424,28 @@ export async function startMcpServer(
             };
           }
 
+          const parsed = StackReviewArgsSchema.safeParse(args);
+          if (!parsed.success) {
+            return errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+          }
+
           // Delegate to gstack
           return {
             content: [
               {
                 type: 'text',
-                text: `Run /review on ${args.path} in Claude Code with GStack loaded`,
+                text: `Run /review on ${parsed.data.path} in Claude Code with GStack loaded`,
               },
             ],
           };
         }
 
         case 'gagent_config_get': {
-          const value = config.get(args.key as string);
+          const parsed = ConfigGetArgsSchema.safeParse(args);
+          if (!parsed.success) {
+            return errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+          }
+          const value = config.get(parsed.data.key);
           return {
             content: [
               {
@@ -400,19 +457,27 @@ export async function startMcpServer(
         }
 
         case 'gagent_config_set': {
-          await config.set(args.key as string, args.value);
+          const parsed = ConfigSetArgsSchema.safeParse(args);
+          if (!parsed.success) {
+            return errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+          }
+          await config.set(parsed.data.key, parsed.data.value);
           return {
             content: [
               {
                 type: 'text',
-                text: `Set ${args.key} = ${JSON.stringify(args.value)}`,
+                text: `Set ${parsed.data.key} = ${JSON.stringify(parsed.data.value)}`,
               },
             ],
           };
         }
 
         case 'gagent_get_receipts': {
-          const receipts = await pipeline.getReceipts(args as any);
+          const parsed = GetReceiptsArgsSchema.safeParse(args);
+          if (!parsed.success) {
+            return errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+          }
+          const receipts = await pipeline.getReceipts(parsed.data);
           return {
             content: [
               {
@@ -424,7 +489,11 @@ export async function startMcpServer(
         }
 
         case 'gagent_get_drift': {
-          const drift = await pipeline.getDrift(args.metricName as string);
+          const parsed = GetDriftArgsSchema.safeParse(args);
+          if (!parsed.success) {
+            return errorResponse(`Invalid request: ${JSON.stringify(parsed.error.flatten())}`);
+          }
+          const drift = await pipeline.getDrift(parsed.data.metricName);
           return {
             content: [
               {

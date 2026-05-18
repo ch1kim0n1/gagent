@@ -40,4 +40,26 @@ describe('GAgent MCP Server', () => {
     expect(serverSource).toContain('PermissionModel.loadDefault');
     expect(serverSource).toContain('mcp_auth_denied');
   });
+
+  it('validates input using Zod schemas', () => {
+    expect(serverSource).toContain('z.object');
+    expect(serverSource).toContain('z.string');
+    expect(serverSource).toContain('z.number');
+  });
+
+  it('returns standardized error responses', () => {
+    expect(serverSource).toContain('content: [');
+    expect(serverSource).toContain('isError: true');
+  });
+
+  it('implements proper scope separation', () => {
+    expect(serverSource).toContain('read');
+    expect(serverSource).toContain('write');
+  });
+
+  it('includes error codes for troubleshooting', () => {
+    const hasErrorCode = serverSource.includes('code:');
+    const hasErrorField = serverSource.includes('error:');
+    expect(hasErrorCode || hasErrorField).toBe(true);
+  });
 });

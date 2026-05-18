@@ -34,10 +34,13 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1.0
 
   gbrain:
     build:
-      context: ../gbrain
+      context: ./gbrain
     ports:
       - '3000:3000'
     environment:
@@ -52,10 +55,13 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1.0
 
   gorchestrator:
     build:
-      context: ../gorchestrator
+      context: ./orchestrator
     ports:
       - '3001:8080'
     environment:
@@ -72,13 +78,16 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 768m
+    mem_reservation: 384m
+    cpus: 1.5
 
   # Optional — start with: docker compose --profile optional up
 
   gmirror:
     profiles: ['optional']
     build:
-      context: ../gmirror
+      context: ./gmirror
     ports:
       - '3002:8080'
     environment:
@@ -94,11 +103,14 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1.0
 
   gtom:
     profiles: ['optional']
     build:
-      context: ../GToM
+      context: ./GToM
     ports:
       - '3003:8080'
     environment:
@@ -111,11 +123,14 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1.0
 
   glearn:
     profiles: ['optional']
     build:
-      context: ../glearn
+      context: ./glearn
     ports:
       - '3005:8080'
     environment:
@@ -131,6 +146,9 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: 1.0
 
 volumes:
   gagent-data:
