@@ -842,6 +842,17 @@ export class LLMClient {
   }
 
   /**
+   * Get all metrics
+   */
+  getMetrics(): { totalCostUsd: number; totalTokens: number; callCount: number } {
+    return {
+      totalCostUsd: this.totalCostUsd,
+      totalTokens: this.totalTokens,
+      callCount: this.callCount,
+    };
+  }
+
+  /**
    * Reset metrics
    */
   resetMetrics(): void {

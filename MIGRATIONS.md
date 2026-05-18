@@ -28,6 +28,21 @@ commands serve requests.
 | --- | --- | --- |
 | 1 | `001_initial_schema.sql` | Initial persistent run, receipt, and metadata tables. |
 | 2 | `002_persistent_metrics.sql` | Persistent metrics and cost/budget ledger data. |
+| 3 | `003_dyad_schema.sql` | DYAD support: dyad_id, message_count, ingestion_checkpoints tables. |
+
+## Rubric Version Migration
+
+When the quality rubric schema changes (e.g., new dimensions, modified scoring formulas):
+
+1. **Rubric version bump**: Increment the rubric version in types/quality-rubric.ts
+2. **Backward compatibility**: Store the rubric version with each receipt in the `rubric_version` column
+3. **Migration path**: Add a migration that updates existing receipts to the new rubric version with appropriate score transformations
+4. **Rollback strategy**: Keep the previous rubric version code available for at least one major version to support rollback
+
+To migrate rubric versions manually:
+```bash
+gagent migrate --to <target_schema_version>
+```
 
 ## Applying Migrations
 

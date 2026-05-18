@@ -232,6 +232,22 @@ git diff --check
 `npm run verify` executes package contract checks, documentation checks, privacy scans,
 test-isolation checks, MCP contract checks, TypeScript typechecking, and Jest.
 
+## Versioning
+
+GAgent follows [Semantic Versioning (semver)](https://semver.org/).
+
+- **Major version (X.0.0)**: Breaking changes to CLI, MCP, or TypeScript public contracts
+- **Minor version (0.X.0)**: New features, non-breaking additions
+- **Patch version (0.0.X)**: Bug fixes, internal changes
+
+### API Stability Levels
+
+- **Stable**: Public CLI commands, MCP tools, and exported TypeScript interfaces
+- **Beta**: New features under active development (may change without major version bump)
+- **Alpha**: Experimental features (may be removed or changed significantly)
+
+Breaking changes are tracked via git tags. See [MIGRATIONS.md](MIGRATIONS.md) for migration guides between versions.
+
 ## License
 
 MIT

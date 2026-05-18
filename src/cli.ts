@@ -1393,4 +1393,30 @@ program
     });
   });
 
+program
+  .command('migrate')
+  .description('Migrate database schema between versions')
+  .option('--from <version>', 'Source schema version', (v: string) => parseInt(v, 10))
+  .option('--to <version>', 'Target schema version', (v: string) => parseInt(v, 10))
+  .option('--dry-run', 'Show migration plan without executing')
+  .action(async (opts: any) => {
+    const persistence = new GAgentPersistenceManager();
+    const currentVersion = persistence.getCurrentSchemaVersion();
+
+    console.log(chalk.blue(`Current schema version: ${currentVersion}`));
+
+    if (opts.dryRun) {
+      console.log(chalk.yellow('Dry run mode - no changes will be applied'));
+      return;
+    }
+
+    if (opts.to && opts.to !== currentVersion) {
+      console.log(chalk.blue(`Migrating from schema version ${currentVersion} to ${opts.to}`));
+      await persistence.runMigrationsTo(opts.to);
+      console.log(chalk.green('Migration completed successfully'));
+    } else {
+      console.log(chalk.green('Schema is already at target version'));
+    }
+  });
+
 program.parse();

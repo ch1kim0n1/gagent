@@ -1,5 +1,37 @@
 # GAgent Performance
 
+## SLO/SLI
+
+### Service Level Objectives (SLOs)
+
+| Metric | Target | Measurement Window |
+| --- | --- | --- |
+| Task success rate | ≥95% | 7-day rolling |
+| P50 latency | <5s | 7-day rolling |
+| P95 latency | <15s | 7-day rolling |
+| P99 latency | <30s | 7-day rolling |
+| Error rate | <5% | 7-day rolling |
+| Backpressure rejection rate | <1% | 1-hour rolling |
+
+### Service Level Indicators (SLIs)
+
+- **Task success rate**: Percentage of tasks that complete successfully (exit code 0)
+- **Latency**: Time from task submission to completion (p50, p95, p99)
+- **Error rate**: Percentage of tasks that fail with non-zero exit code
+- **Backpressure rejection rate**: Percentage of tasks rejected due to queue depth limits
+- **Memory usage**: RSS and heap memory during task execution
+- **Cache hit rate**: Percentage of cache hits for GBrain context lookups
+
+### Alerting
+
+Alert when:
+- Task success rate falls below 90% (burn rate warning)
+- P95 latency exceeds 20s for 5 consecutive minutes
+- Backpressure rejection rate exceeds 2% for 10 consecutive minutes
+- Memory usage exceeds 80% of available system memory
+
+
+
 ## SLO And SLI
 
 | SLI | SLO | Measurement |

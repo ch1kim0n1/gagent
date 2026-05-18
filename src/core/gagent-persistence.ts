@@ -96,6 +96,34 @@ export class GAgentPersistenceManager {
     );
   }
 
+  /**
+   * Get current schema version from database
+   */
+  getCurrentSchemaVersion(): number {
+    const row = this.db.prepare('SELECT MAX(version) AS version FROM schema_version').get() as { version: number } | undefined;
+    return row?.version || 0;
+  }
+
+  /**
+   * Run migrations to a specific target version
+   * @deprecated Use automatic migrations in initializeSchema instead
+   */
+  async runMigrationsTo(targetVersion: number): Promise<void> {
+    const currentVersion = this.getCurrentSchemaVersion();
+    if (targetVersion <= currentVersion) {
+      this.logger.info(`Schema already at version ${currentVersion}, no migration needed`);
+      return;
+    }
+
+    if (targetVersion > this.SCHEMA_VERSION) {
+      throw new Error(`Target version ${targetVersion} exceeds maximum supported version ${this.SCHEMA_VERSION}`);
+    }
+
+    this.logger.info(`Migrating from schema version ${currentVersion} to ${targetVersion}`);
+    this.runMigrations(currentVersion);
+    this.logger.info('Migration completed successfully');
+  }
+
   private runMigrations(fromVersion: number): void {
     const migrations = this.loadMigrations();
     for (const migration of migrations) {
