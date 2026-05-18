@@ -38,7 +38,7 @@ export class DriftDetector {
   recordSnapshot(_name: string, _value: number, _context?: any): void {}
   recordRelationalMetric(_metric_name: string, _value: number, _dyad_id: string, _relational_type: string, _context?: any): void {}
   detectDrift(_metric: string, _threshold: number): boolean { return false; }
-  detectAllDrift(_threshold: number): Record<string, boolean> { return {}; }
+  detectAllDrift(_threshold?: number): any { return []; }
 }
 
 export class LatencyTracker {
@@ -58,23 +58,43 @@ export class LatencyTracker {
     if (!history || history.length === 0) return 0;
     return history[history.length - 1];
   }
-  record(operation: string, latencyMs: number): void {
-    if (!this.latencies.has(operation)) {
-      this.latencies.set(operation, []);
+  record(...args: any[]): void {
+    if (args.length >= 2) {
+      const operation = args[0];
+      const latencyMs = args[1];
+      if (!this.latencies.has(operation)) {
+        this.latencies.set(operation, []);
+      }
+      this.latencies.get(operation)!.push(latencyMs);
     }
-    this.latencies.get(operation)!.push(latencyMs);
+  }
+  getMetrics(): Record<string, number> {
+    const metrics: Record<string, number> = {};
+    for (const [op, history] of this.latencies) {
+      if (history.length > 0) {
+        metrics[op] = history[history.length - 1];
+      }
+    }
+    return metrics;
   }
 }
 
 export interface HealthCheckResult {
   healthy: boolean;
-  checks: Record<string, boolean>;
+  checks?: Record<string, boolean>;
   message?: string;
   service?: string;
   latency_ms?: number;
   timestamp?: string;
   error?: string;
 }
+
+// Type alias to match expected HealthCheckLike
+export type HealthCheckLike = HealthCheckResult & {
+  service: string;
+  latency_ms: number;
+  timestamp: string;
+};
 
 const logger = coreLogger;
 
