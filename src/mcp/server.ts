@@ -5,6 +5,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import * as crypto from 'crypto';
 import { z } from 'zod';
 import { ToolRegistry } from '../tools/registry.js';
 import { GAgentConfig } from '../config/manager.js';
@@ -28,21 +29,116 @@ interface AuthResult {
   scopes?: McpScope[];
 }
 
-function createAuthMiddleware(_config: AuthMiddlewareConfig) {
+const TOKEN_PREFIX = 'gat_v1.';
+const DEFAULT_TOKEN_TTL_SECONDS = 24 * 60 * 60;
+
+interface TokenPayload {
+  scopes: McpScope[];
+  iat: number; // issued-at (epoch seconds)
+  exp: number; // expiry (epoch seconds)
+  jti: string; // unique id
+}
+
+function base64urlEncode(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlDecode(value: string): Buffer {
+  return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+}
+
+/** Constant-time string comparison that is safe against length leaks. */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) {
+    // Compare against itself to keep timing roughly constant, then fail.
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Real HMAC-SHA256 token verification. Tokens are self-contained signed blobs
+ * (`gat_v1.<base64url(payload)>.<base64url(sig)>`). The signature is verified
+ * with the configured secret using a constant-time comparison, and expiry is
+ * enforced. There is NO accept-all path: a missing/forged/expired token fails.
+ */
+export function createAuthMiddleware(config: AuthMiddlewareConfig) {
+  const secret = config.secret;
+  const allowDevSecret = process.env.GAGENT_ALLOW_DEV_SECRET === 'true';
+
+  // Fail closed on an insecure default secret unless explicitly opted in.
+  const secretIsInsecure = !secret || secret === 'dev-secret-key';
+  if (secretIsInsecure && !allowDevSecret) {
+    logger.error(
+      'MCP auth secret is missing or set to the insecure default "dev-secret-key". ' +
+        'Refusing all tokens. Set gagent_auth_secret to a strong value, or set ' +
+        'GAGENT_ALLOW_DEV_SECRET=true for local development only.',
+    );
+  }
+  const enabled = !secretIsInsecure || allowDevSecret;
+
+  function sign(payloadB64: string): string {
+    return base64urlEncode(crypto.createHmac('sha256', secret).update(payloadB64).digest());
+  }
+
+  function hashToken(token: string): string {
+    return `hash:${crypto.createHash('sha256').update(token).digest('hex').slice(0, 16)}`;
+  }
+
   return {
-    authenticate: (_token?: string): AuthResult => ({
-      success: true,
-      token: _token,
-      hashToken: _token ? `hash:${_token.slice(0, 8)}` : undefined,
-      scopes: _config.defaultRoles,
-    }),
-    issueToken: (_scopes: McpScope[]): AuthResult => ({
-      success: true,
-      token: 'dev-token',
-      hashToken: 'hash:dev-token',
-    }),
-    getAuth: () => ({ authenticated: true, hashToken: 'hash:dev' }),
-    middleware: (_req: any, _res: any, next: any) => next(),
+    authenticate: (rawToken?: string): AuthResult => {
+      if (!enabled) {
+        return { success: false, error: 'auth disabled: server secret is insecure or unset' };
+      }
+      const token = (rawToken || '').replace(/^Bearer\s+/i, '').trim();
+      if (!token || !token.startsWith(TOKEN_PREFIX)) {
+        return { success: false, error: 'malformed token' };
+      }
+      const body = token.slice(TOKEN_PREFIX.length);
+      const parts = body.split('.');
+      if (parts.length !== 2) {
+        return { success: false, error: 'malformed token' };
+      }
+      const [payloadB64, sigB64] = parts;
+      const expectedSig = sign(payloadB64);
+      if (!timingSafeEqualStr(sigB64, expectedSig)) {
+        return { success: false, error: 'invalid signature' };
+      }
+      let payload: TokenPayload;
+      try {
+        payload = JSON.parse(base64urlDecode(payloadB64).toString('utf8'));
+      } catch {
+        return { success: false, error: 'invalid payload' };
+      }
+      const now = Math.floor(Date.now() / 1000);
+      if (typeof payload.exp !== 'number' || payload.exp <= now) {
+        return { success: false, error: 'token expired' };
+      }
+      const scopes = Array.isArray(payload.scopes)
+        ? payload.scopes.filter((s): s is McpScope => s === 'read' || s === 'write')
+        : [];
+      return { success: true, token, hashToken: hashToken(token), scopes };
+    },
+    issueToken: (scopes: McpScope[], ttlSeconds: number = DEFAULT_TOKEN_TTL_SECONDS): AuthResult => {
+      if (!enabled) {
+        return { success: false, error: 'cannot issue token: server secret is insecure or unset' };
+      }
+      const now = Math.floor(Date.now() / 1000);
+      const payload: TokenPayload = {
+        scopes: scopes.filter((s) => s === 'read' || s === 'write'),
+        iat: now,
+        exp: now + Math.max(1, ttlSeconds),
+        jti: crypto.randomUUID(),
+      };
+      const payloadB64 = base64urlEncode(Buffer.from(JSON.stringify(payload), 'utf8'));
+      const token = `${TOKEN_PREFIX}${payloadB64}.${sign(payloadB64)}`;
+      return { success: true, token, hashToken: hashToken(token), scopes: payload.scopes };
+    },
+    hashToken,
+    enabled,
   };
 }
 
@@ -637,24 +733,25 @@ export async function startMcpServer(
       return { ok: false as const, error: `Authentication failed: ${auth.error}` };
     }
 
-    const token = authHeader.replace(/^Bearer\s+/i, '');
-    const scopes = scopesForToken(token, (auth.scopes as string[] | undefined) || []);
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const scopes = scopesForToken(token, (auth.scopes as McpScope[] | undefined) || []);
     if (!scopes.includes(requiredScope)) {
       return { ok: false as const, error: `Insufficient permissions: requires ${requiredScope} scope` };
     }
 
-    return { ok: true as const, token };
+    return { ok: true as const, token, hashToken: auth.hashToken };
   }
 
-  function scopesForToken(token: string, fallbackRoles: string[]): McpScope[] {
-    if (bootstrapToken && token === bootstrapToken) {
+  function scopesForToken(token: string, fallbackRoles: McpScope[]): McpScope[] {
+    if (bootstrapToken && timingSafeEqualStr(token, bootstrapToken)) {
       return permissions.scopesForToken(token, bootstrapScopes).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
     }
     if (bootstrapToken) {
-      return [];
+      // A bootstrap token is configured: only the verified token's own scopes
+      // (intersected with any configured permission grants) apply.
+      return permissions.scopesForToken(token, fallbackRoles).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
     }
-    const fallback = parseScopes(fallbackRoles.join(','));
-    return permissions.scopesForToken(token, fallback).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
+    return permissions.scopesForToken(token, fallbackRoles).filter((scope): scope is McpScope => scope === 'read' || scope === 'write');
   }
 
   function requiredScopeForTool(name: string): McpScope {
@@ -662,10 +759,32 @@ export async function startMcpServer(
     return writeTools.has(name) ? 'write' : 'read';
   }
 
+  const RATE_WINDOW_MAX_ENTRIES = parseLimit(process.env.GAGENT_RATE_WINDOW_MAX_ENTRIES, 10000);
+
+  function pruneRateWindows(now: number, hourMs: number): void {
+    // Drop windows whose hour bucket has fully expired (no longer rate-limiting).
+    for (const [key, win] of rateWindows) {
+      if (now - win.hourStart >= hourMs) {
+        rateWindows.delete(key);
+      }
+    }
+    // Hard cap: if still over the limit, evict oldest entries (FIFO via Map order).
+    if (rateWindows.size > RATE_WINDOW_MAX_ENTRIES) {
+      const overflow = rateWindows.size - RATE_WINDOW_MAX_ENTRIES;
+      let removed = 0;
+      for (const key of rateWindows.keys()) {
+        if (removed >= overflow) break;
+        rateWindows.delete(key);
+        removed++;
+      }
+    }
+  }
+
   function checkRateLimit(token: string) {
     const now = Date.now();
     const minuteMs = 60 * 1000;
     const hourMs = 60 * 60 * 1000;
+    pruneRateWindows(now, hourMs);
     let window = rateWindows.get(token);
     if (!window) {
       window = { minuteCount: 0, minuteStart: now, hourCount: 0, hourStart: now };
@@ -701,7 +820,7 @@ export async function startMcpServer(
   }
 
   function tokenLabel(token: string): string {
-    return token === 'anonymous-read' ? token : `token:${authMiddleware.getAuth().hashToken}`;
+    return token === 'anonymous-read' ? token : `token:${authMiddleware.hashToken(token)}`;
   }
 
   if (port) {

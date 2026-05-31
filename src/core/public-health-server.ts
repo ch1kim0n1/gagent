@@ -1,5 +1,6 @@
 import { IncomingMessage, Server as HttpServer, ServerResponse, createServer } from 'http';
 import { getDefaultSecretManager } from './security.js';
+import { constantTimeEqual } from '../security/crypto.js';
 
 export interface HealthCheckResult {
   status: 'healthy' | 'degraded' | 'unhealthy';
@@ -21,6 +22,7 @@ export class SecureHealthServer {
   private shutdownHandlers: Array<() => Promise<void>> = [];
   private windows = new Map<string, RateWindow>();
   private limit = Number(process.env.GAGENT_HEALTH_RATE_LIMIT_RPM || '120');
+  private maxWindows = Number(process.env.GAGENT_HEALTH_RATE_MAX_ENTRIES || '10000');
   private shutdownToken = getDefaultSecretManager().get('health_shutdown_token');
 
   constructor(
@@ -95,11 +97,31 @@ export class SecureHealthServer {
 
   private authorizeShutdown(header?: string): boolean {
     if (!this.shutdownToken) return false;
-    return header?.replace(/^Bearer\s+/i, '') === this.shutdownToken;
+    const presented = (header ?? '').replace(/^Bearer\s+/i, '');
+    return constantTimeEqual(presented, this.shutdownToken);
+  }
+
+  private pruneWindows(now: number): void {
+    for (const [key, win] of this.windows) {
+      if (now - win.startedAt >= 60_000) {
+        this.windows.delete(key);
+      }
+    }
+    // Hard cap to bound memory: evict oldest (insertion-order) entries.
+    if (this.windows.size > this.maxWindows) {
+      const overflow = this.windows.size - this.maxWindows;
+      let removed = 0;
+      for (const key of this.windows.keys()) {
+        if (removed >= overflow) break;
+        this.windows.delete(key);
+        removed++;
+      }
+    }
   }
 
   private checkRate(key: string): { allowed: boolean; resetAt: string } {
     const now = Date.now();
+    this.pruneWindows(now);
     let window = this.windows.get(key);
     if (!window || now - window.startedAt >= 60_000) {
       window = { count: 0, startedAt: now };

@@ -1,7 +1,35 @@
 import * as crypto from 'crypto';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
+
+/**
+ * Run an external command without a shell, feeding `input` via stdin.
+ * Args are passed as an argv array so untrusted data can never be interpreted
+ * by a shell (no command injection).
+ */
+function execFileWithInput(
+  command: string,
+  args: string[],
+  input: string,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { shell: false });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`${command} exited with code ${code}: ${stderr}`));
+      }
+    });
+    child.stdin.end(input);
+  });
+}
 import { BudgetExceededError } from '../core/errors.js';
 import * as os from 'os';
 import * as path from 'path';
@@ -206,6 +234,10 @@ export class Pipeline {
   private maxConcurrency: number;
   private activeRunBudget?: { maxCostUsd: number; startCostUsd: number; partialResults: unknown[] };
   private warnedMissingBudget = false;
+  private defaultRunBudgetUsd: number = (() => {
+    const parsed = Number(process.env.GAGENT_DEFAULT_RUN_BUDGET_USD);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1.0;
+  })();
   private gorchestratorAvailable: boolean = true;
   private offlineMode: boolean = false;
 
@@ -455,9 +487,19 @@ export class Pipeline {
         partialResults: [],
       };
     } else {
-      this.activeRunBudget = undefined;
+      // Fail-safe: never run with an unbounded budget. When no per-run budget
+      // is supplied, enforce a safe default ceiling so a misbehaving run (e.g.
+      // an escalation loop or prompt-injected tool spam) cannot spend without
+      // limit. Override via GAGENT_DEFAULT_RUN_BUDGET_USD.
+      this.activeRunBudget = {
+        maxCostUsd: this.defaultRunBudgetUsd,
+        startCostUsd: runStartCostUsd,
+        partialResults: [],
+      };
       if (!this.warnedMissingBudget) {
-        this.logger.warn('No per-run budget was supplied; cost hard gate enforcement is disabled for this run');
+        this.logger.warn(
+          `No per-run budget was supplied; enforcing default cost hard gate of $${this.defaultRunBudgetUsd.toFixed(2)} (set GAGENT_DEFAULT_RUN_BUDGET_USD to change)`,
+        );
         this.warnedMissingBudget = true;
       }
     }
@@ -1034,10 +1076,10 @@ Return a JSON object with the decision, e.g.:
       return await this.executeDirectly(task);
     }
     
-    // Delegate to GStack
-    const { execAsync } = this.getExec();
-    const { stdout } = await execAsync(`echo "${task}" | gstack run`);
-    
+    // Delegate to GStack. Pass the task via stdin (argv array, no shell) to
+    // avoid OS command injection from untrusted task text.
+    const { stdout } = await execFileWithInput('gstack', ['run'], task);
+
     return [{
       id: `single-${Date.now()}`,
       output: stdout
@@ -1055,12 +1097,12 @@ Return a JSON object with the decision, e.g.:
       return await this.executeDirectly(task);
     }
     
-    const { execAsync } = this.getExec();
     const attempts = Math.max(1, Math.min(n, this.maxConcurrency));
-    const { stdout } = await execAsync(
-      `gorchestrator dispatch --task "${task}" --attempts ${attempts} --json`
+    const { stdout } = await execFileAsync(
+      'gorchestrator',
+      ['dispatch', '--task', task, '--attempts', String(attempts), '--json'],
     );
-    
+
     return JSON.parse(stdout);
   }
 
@@ -1070,9 +1112,9 @@ Return a JSON object with the decision, e.g.:
     }
     
     try {
-      const { execAsync } = this.getExec();
-      const { stdout } = await execAsync(
-        `gmirror test --input "${attempt.output}" --json`
+      const { stdout } = await execFileAsync(
+        'gmirror',
+        ['test', '--input', attempt.output, '--json'],
       );
       return JSON.parse(stdout);
     } catch {
@@ -1086,9 +1128,9 @@ Return a JSON object with the decision, e.g.:
     }
     
     try {
-      const { execAsync } = this.getExec();
-      const { stdout } = await execAsync(
-        `gtom assess --decision "${attempt.output}" --json`
+      const { stdout } = await execFileAsync(
+        'gtom',
+        ['assess', '--decision', attempt.output, '--json'],
       );
       return JSON.parse(stdout);
     } catch {
@@ -1429,12 +1471,6 @@ Return this JSON shape:
       '--winner', winner.id,
       '--json', JSON.stringify(attempts),
     ]);
-  }
-
-  private getExec() {
-    const { promisify } = require('util');
-    const { exec } = require('child_process');
-    return { execAsync: promisify(exec) };
   }
 
   /**
