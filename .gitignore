@@ -1,4 +1,4 @@
-node_modules/
+ï»¿node_modules/
 dist/
 coverage/
 *.env
@@ -6,7 +6,7 @@ coverage/
 .DS_Store
 *.log
 
-# Runtime data — never commit
+# Runtime data ï¿½ never commit
 node_modules/
 *.db
 *.sqlite
@@ -23,3 +23,8 @@ receipts-*.jsonl
 # Build output
 dist/
 *.js.map
+
+build/
+.env.*
+!.env.example
+.nyc_output/

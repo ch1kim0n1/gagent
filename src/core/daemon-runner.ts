@@ -1,4 +1,4 @@
-import { GAgentPersistenceManager } from './gagent-persistence.js';
+﻿import { GAgentPersistenceManager } from './gagent-persistence.js';
 import { RawMessage } from '../types/index.js';
 
 export interface DaemonExecutionConfig {
@@ -46,11 +46,14 @@ export class DaemonRunner {
         if (this.config.dry_run) {
           console.log(JSON.stringify({ source: this.config.source, rowid: message.rowid, dry_run: true }));
         } else {
-          await this.config.on_message(message);
+          try {
+            await this.config.on_message(message);
+          } catch (error) {
+            console.error('Message handler failed for rowid', message.rowid, error);
+            // Continue processing next messages
+          }
         }
         this.checkpoint = Math.max(this.checkpoint, message.rowid);
-      }
-      if (messages.length > 0) {
         this.persistenceManager.saveCheckpoint(this.config.checkpoint_key, this.checkpoint);
       }
       await delay(this.config.poll_interval_ms);

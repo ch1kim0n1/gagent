@@ -1,4 +1,4 @@
-import {
+﻿import {
   RedactedMessage,
   RefusalClassifierResult,
   RefusalReason,
@@ -28,7 +28,8 @@ export class EthicalRefusalClassifier {
       return parsed.should_refuse || !heuristic.should_refuse
         ? parsed
         : heuristic;
-    } catch {
+    } catch (error) {
+      console.warn('LLM ethical classification failed, falling back to heuristics:', error);
       return heuristic;
     }
   }

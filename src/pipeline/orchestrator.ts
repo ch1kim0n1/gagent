@@ -1,4 +1,7 @@
 import * as crypto from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import { BudgetExceededError } from '../core/errors.js';
 import * as os from 'os';
 import * as path from 'path';
@@ -1420,11 +1423,12 @@ Return this JSON shape:
     if (!this.config.isToolEnabled('glearn')) {
       return;
     }
-    
-    const { execAsync } = this.getExec();
-    await execAsync(
-      `glearn capture --task "${task}" --winner "${winner.id}" --json '${JSON.stringify(attempts)}'`
-    );
+    await execFileAsync('glearn', [
+      'capture',
+      '--task', task,
+      '--winner', winner.id,
+      '--json', JSON.stringify(attempts),
+    ]);
   }
 
   private getExec() {

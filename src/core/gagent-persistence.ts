@@ -1,4 +1,4 @@
-import * as path from 'path';
+﻿import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
@@ -47,9 +47,8 @@ function openDatabase(dbPath: string): any {
   } catch (betterErr) {
     // Fall through to bun:sqlite
     try {
-      // Use eval('require') to keep tsc from resolving "bun:sqlite" at compile time.
-      const requireFn: NodeRequire = (eval('require'));
-      const { Database } = requireFn('bun:sqlite');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
       const bunDb = new Database(dbPath);
       return {
         exec: (sql: string) => bunDb.exec(sql),

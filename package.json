@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "gagent",
   "version": "0.5.0",
   "description": "Unified CLI for the six-tool agent stack",
@@ -111,5 +111,9 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": ["agent", "llm", "multi-model", "pipeline", "ai-agent"],
+  "repository": {"type": "git", "url": "https://github.com/ch1kim0n1/gagent.git"},
+  "homepage": "https://github.com/ch1kim0n1/gagent#readme",
+  "bugs": {"url": "https://github.com/ch1kim0n1/gagent/issues"}
 }
