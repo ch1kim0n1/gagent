@@ -28,3 +28,9 @@ build/
 .env.*
 !.env.example
 .nyc_output/
+
+# Python packaging build artifacts
+dist-pypi/
+*.egg-info/
+__pycache__/
+.venv-pypi/

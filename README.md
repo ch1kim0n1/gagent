@@ -32,6 +32,36 @@ to shell users and agent clients.
 - Exports Prometheus and OpenTelemetry-compatible observability data.
 - Bridges stack services while degrading cleanly when one external tool is unavailable.
 
+## Install from PyPI (`pip install gagent`)
+
+GAgent is a Node.js tool, but it is also distributed on PyPI so it can be
+installed with `pip`:
+
+```bash
+pip install gagent
+gagent --help
+```
+
+The PyPI package ships a pre-bundled JavaScript build of the CLI and a small
+Python launcher. When you run `gagent`, the launcher finds your local Node.js
+and executes the bundled CLI through it.
+
+**Prerequisite: Node.js >= 18.** This is a JavaScript tool; `pip` does not
+install a JavaScript runtime. If `node` is missing or older than 18, `gagent`
+prints a clear error and exits non-zero. Install Node.js from
+<https://nodejs.org/>.
+
+**Optional SQLite persistence.** Persistence-backed commands (e.g. `health`,
+`run`, `receipts`) use the native `better-sqlite3` module, which is *not*
+bundled (it requires a per-platform C++ toolchain to compile). The CLI itself
+starts and `--help` / `--version` work without it; install `better-sqlite3`
+into a reachable `node_modules` (or run from a checkout with deps installed) to
+enable on-disk persistence. Without it, those commands run in degraded mode and
+report a persistence error.
+
+To rebuild the PyPI artifacts from source, see `scripts/build_pypi.sh`
+(npm build → esbuild bundle → `python -m build`).
+
 ## Quick Start
 
 ```bash
