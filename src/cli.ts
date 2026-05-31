@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 
 import { program } from 'commander';
 import chalk from 'chalk';
@@ -430,7 +430,7 @@ program
   .command('config')
   .description('View or edit configuration')
   .option('--get <key>', 'Get config value')
-  .option('--set <key> <value>', 'Set config value')
+  .option('--set <key> <value...>', 'Set config value (e.g. --set model gpt-4o)')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
@@ -443,12 +443,22 @@ program
         console.log(value);
       }
     } else if (options.set) {
-      // Parse value as JSON if possible
-      let parsed = options.set[1];
-      try { parsed = JSON.parse(parsed); } catch {}
-      await config.set(options.set[0], parsed);
+      // With `--set <key> <value...>`, Commander collects all tokens into an
+      // array: the first is the key, the remainder form the value.
+      const setArgs: string[] = Array.isArray(options.set) ? options.set : [String(options.set)];
+      const key = setArgs[0];
+      const rawValue = setArgs.slice(1).join(' ');
+      if (!key || setArgs.length < 2) {
+        console.error(chalk.red('[GAgent] config --set requires a key and a value, e.g. --set model gpt-4o'));
+        process.exitCode = 1;
+        return;
+      }
+      // Parse value as JSON if possible (numbers, booleans, objects); otherwise keep as string.
+      let parsed: unknown = rawValue;
+      try { parsed = JSON.parse(rawValue); } catch {}
+      await config.set(key, parsed);
       if (options.json) {
-        console.log(JSON.stringify({ updated: options.set[0], value: parsed }, null, 2));
+        console.log(JSON.stringify({ updated: key, value: parsed }, null, 2));
         return;
       }
       if (!options.quiet) {

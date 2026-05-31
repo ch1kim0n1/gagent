@@ -4,6 +4,8 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmitOnError": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

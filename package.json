@@ -1,40 +1,47 @@
-﻿{
+{
   "name": "gagent",
   "version": "0.5.0",
   "description": "Unified CLI for the six-tool agent stack",
+  "main": "./dist/sdk.js",
+  "types": "./dist/sdk.d.ts",
   "bin": {
     "gagent": "./dist/cli.js"
   },
   "exports": {
     ".": {
-      "types": "./dist/gagent/src/sdk.d.ts",
-      "import": "./dist/gagent/src/sdk.js",
-      "require": "./dist/gagent/src/sdk.js"
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js",
+      "require": "./dist/sdk.js"
     },
     "./sdk": {
-      "types": "./dist/gagent/src/sdk.d.ts",
-      "import": "./dist/gagent/src/sdk.js",
-      "require": "./dist/gagent/src/sdk.js"
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js",
+      "require": "./dist/sdk.js"
     },
     "./PIIRedactor": {
-      "import": "./dist/gagent/src/core/pii-redactor.js",
-      "types": "./dist/gagent/src/core/pii-redactor.d.ts"
+      "types": "./dist/core/pii-redactor.d.ts",
+      "import": "./dist/core/pii-redactor.js",
+      "require": "./dist/core/pii-redactor.js"
     },
     "./EthicalClassifier": {
-      "import": "./dist/gagent/src/core/ethical-refusal-classifier.js",
-      "types": "./dist/gagent/src/core/ethical-refusal-classifier.d.ts"
+      "types": "./dist/core/ethical-refusal-classifier.d.ts",
+      "import": "./dist/core/ethical-refusal-classifier.js",
+      "require": "./dist/core/ethical-refusal-classifier.js"
     },
     "./pii": {
-      "require": "./dist/gagent/src/core/pii-redactor.js",
-      "types": "./dist/gagent/src/core/pii-redactor.d.ts"
+      "types": "./dist/core/pii-redactor.d.ts",
+      "import": "./dist/core/pii-redactor.js",
+      "require": "./dist/core/pii-redactor.js"
     },
     "./ethics": {
-      "require": "./dist/gagent/src/core/ethical-refusal-classifier.js",
-      "types": "./dist/gagent/src/core/ethical-refusal-classifier.d.ts"
+      "types": "./dist/core/ethical-refusal-classifier.d.ts",
+      "import": "./dist/core/ethical-refusal-classifier.js",
+      "require": "./dist/core/ethical-refusal-classifier.js"
     },
     "./client": {
-      "require": "./dist/gagent/src/client.js",
-      "types": "./dist/gagent/src/client.d.ts"
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js",
+      "require": "./dist/client.js"
     }
   },
   "files": [
@@ -43,6 +50,8 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build",
     "dev": "tsc --watch",
     "serve": "node dist/serve.js",
     "test": "NODE_OPTIONS=\"--localstorage-file=/tmp/jest-ls.json\" jest",
@@ -80,8 +89,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@types/pg": "^8.20.0",
-    "@types/uuid": "^9.0.0",
     "better-sqlite3": "^12.10.0",
     "chalk": "^4.1.2",
     "commander": "^12.0.0",
@@ -98,6 +105,8 @@
     "@types/better-sqlite3": "^7.6.8",
     "@types/jest": "^29.5.14",
     "@types/node": "^20.0.0",
+    "@types/pg": "^8.20.0",
+    "@types/uuid": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "eslint": "^8.57.1",
