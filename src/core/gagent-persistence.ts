@@ -38,6 +38,17 @@ export interface StoredCostEntry {
 /**
  * Open a SQLite database. Prefers `better-sqlite3` (Node).
  * Falls back to `bun:sqlite` when running under Bun (e.g. `bun test`).
+ *
+ * When NEITHER native driver can be loaded — for example in the PyPI/pip
+ * distribution, which bundles the JS but cannot ship a compiled native addon
+ * (no MSVC / build toolchain) — `openDatabase` returns a volatile, pure-JS
+ * in-memory shim that implements the same minimal statement surface this
+ * module relies on. This lets persistence-backed commands (`health`, `run`,
+ * `receipts`, …) run to completion instead of throwing on a missing binding.
+ * The data is non-durable (process lifetime only).
+ *
+ * Set `GAGENT_REQUIRE_SQLITE=1` to disable the fallback and restore the
+ * historical hard-fail behavior when durable persistence is mandatory.
  */
 function openDatabase(dbPath: string): any {
   // Try better-sqlite3 first (Node path)
@@ -90,8 +101,175 @@ function openDatabase(dbPath: string): any {
         close: () => bunDb.close(),
       };
     } catch (_bunErr) {
-      throw betterErr;
+      // Neither native driver loaded. Honor the explicit hard-fail opt-in.
+      if (process.env.GAGENT_REQUIRE_SQLITE === '1') {
+        throw betterErr;
+      }
+      // Graceful degradation: use a volatile in-memory shim so the CLI keeps
+      // working without a native binding (e.g. the pip-installed bundle).
+      return new InMemoryDatabase();
     }
+  }
+}
+
+/**
+ * Volatile, dependency-free fallback used when no native SQLite driver
+ * (better-sqlite3 / bun:sqlite) can be loaded.
+ *
+ * It is NOT a general SQL engine. It implements only the fixed set of
+ * statements GAgentPersistenceManager issues, matched by a stable substring of
+ * each (whitespace-normalized) SQL string. Data lives only for the process
+ * lifetime, which is acceptable for the pip-installed bundle where the native
+ * engine is absent. Durable SQLite remains fully unchanged when a native driver
+ * IS available — this class is never constructed in that case.
+ */
+class InMemoryDatabase {
+  private tables: {
+    schema_version: Array<{ version: number; applied_at: string }>;
+    migrations: Array<{ version: number; name: string; applied_at: string }>;
+    agent_runs: any[];
+    escalation_metrics: Array<{ key: string; value_json: string; updated_at: string }>;
+    llm_call_history: any[];
+    cost_ledger: any[];
+    ingestion_checkpoints: Array<{ source: string; last_rowid: number; updated_at: string }>;
+  } = {
+    schema_version: [],
+    migrations: [],
+    agent_runs: [],
+    escalation_metrics: [],
+    llm_call_history: [],
+    cost_ledger: [],
+    ingestion_checkpoints: [],
+  };
+
+  /** Marker so the manager can detect the volatile fallback. */
+  public readonly __inMemory = true;
+
+  /** Snapshot every table (used to serialize a JSON backup). */
+  dumpTables(): Record<string, any[]> {
+    return JSON.parse(JSON.stringify(this.tables));
+  }
+
+  /** Replace table contents from a snapshot (used to restore a JSON backup). */
+  loadTables(snapshot: Record<string, any[]>): void {
+    for (const key of Object.keys(this.tables) as Array<keyof typeof this.tables>) {
+      if (Array.isArray(snapshot[key])) {
+        (this.tables[key] as any[]) = snapshot[key];
+      }
+    }
+  }
+
+  pragma(_directive: string): any {
+    // No-op: journaling / foreign-key / wal_checkpoint pragmas are meaningless
+    // in memory. Return undefined to mirror best-effort pragma semantics.
+    return undefined;
+  }
+
+  exec(_sql: string): void {
+    // DDL (CREATE TABLE/INDEX, ALTER TABLE) is a no-op; tables already exist as
+    // typed arrays above.
+  }
+
+  transaction<T>(operation: (...args: any[]) => T): (...args: any[]) => T {
+    // No real atomicity guarantees, but preserves the call signature so
+    // `db.transaction(fn)()` works exactly as the native driver expects.
+    return (...args: any[]) => operation(...args);
+  }
+
+  close(): void {
+    // Nothing to release.
+  }
+
+  prepare(sql: string): {
+    run: (...params: any[]) => { changes: number };
+    get: (...params: any[]) => any;
+    all: (...params: any[]) => any[];
+  } {
+    const norm = sql.replace(/\s+/g, ' ').trim();
+    const tables = this.tables;
+
+    const upsert = (table: any[], keyField: string, row: Record<string, any>) => {
+      const idx = table.findIndex((r) => r[keyField] === row[keyField]);
+      if (idx >= 0) table[idx] = row;
+      else table.push(row);
+    };
+    const byTimestampDesc = (rows: any[], field = 'timestamp') =>
+      [...rows].sort((a, b) => String(b[field]).localeCompare(String(a[field])));
+
+    return {
+      run: (...params: any[]) => {
+        if (norm.includes('INSERT OR REPLACE INTO schema_version')) {
+          upsert(tables.schema_version, 'version', { version: params[0], applied_at: params[1] });
+        } else if (norm.includes('INSERT OR REPLACE INTO migrations') || norm.includes('INSERT INTO migrations')) {
+          upsert(tables.migrations, 'version', { version: params[0], name: params[1], applied_at: params[2] });
+        } else if (norm.includes('INSERT OR REPLACE INTO agent_runs')) {
+          upsert(tables.agent_runs, 'run_id', {
+            run_id: params[0], task: params[1], output: params[2], exit_code: params[3],
+            cost_usd: params[4], timestamp: params[5], dyad_id: params[6], message_count: params[7],
+          });
+        } else if (norm.includes('INSERT OR REPLACE INTO escalation_metrics')) {
+          upsert(tables.escalation_metrics, 'key', { key: 'current', value_json: params[0], updated_at: params[1] });
+        } else if (norm.includes('INSERT OR REPLACE INTO llm_call_history')) {
+          upsert(tables.llm_call_history, 'id', {
+            id: params[0], model_id: params[1], input_tokens: params[2], output_tokens: params[3],
+            cost_usd: params[4], operation: params[5], timestamp: params[6], metadata_json: params[7],
+          });
+        } else if (norm.includes('INSERT OR REPLACE INTO cost_ledger')) {
+          upsert(tables.cost_ledger, 'id', {
+            id: params[0], operation: params[1], model_id: params[2], cost_usd: params[3],
+            timestamp: params[4], metadata_json: params[5],
+          });
+        } else if (norm.includes('INSERT OR REPLACE INTO ingestion_checkpoints')) {
+          upsert(tables.ingestion_checkpoints, 'source', { source: params[0], last_rowid: params[1], updated_at: params[2] });
+        }
+        return { changes: 1 };
+      },
+      get: (...params: any[]) => {
+        if (norm.includes('MAX(version) AS version FROM schema_version')) {
+          return tables.schema_version.length
+            ? { version: Math.max(...tables.schema_version.map((r) => r.version)) }
+            : { version: null };
+        }
+        if (norm.includes('value_json FROM escalation_metrics')) {
+          const row = tables.escalation_metrics.find((r) => r.key === 'current');
+          return row ? { value_json: row.value_json } : undefined;
+        }
+        if (norm.includes('FROM agent_runs') && norm.includes('WHERE run_id = ?')) {
+          return tables.agent_runs.find((r) => r.run_id === params[0]) || undefined;
+        }
+        if (norm.includes('last_rowid FROM ingestion_checkpoints')) {
+          const row = tables.ingestion_checkpoints.find((r) => r.source === params[0]);
+          return row ? { last_rowid: row.last_rowid } : undefined;
+        }
+        return undefined;
+      },
+      all: (...params: any[]) => {
+        if (norm.includes('FROM agent_runs')) {
+          if (norm.includes('WHERE timestamp >= ? AND timestamp <= ?')) {
+            return byTimestampDesc(tables.agent_runs)
+              .filter((r) => r.timestamp >= params[0] && r.timestamp <= params[1])
+              .map((r) => ({
+                run_id: r.run_id, task: r.task, exit_code: r.exit_code, cost_usd: r.cost_usd, timestamp: r.timestamp,
+              }));
+          }
+          const rows = byTimestampDesc(tables.agent_runs);
+          if (norm.includes('LIMIT ?')) {
+            return rows.slice(0, params[0]).map((r) => ({
+              run_id: r.run_id, task: r.task, output: r.output, exit_code: r.exit_code,
+              cost_usd: r.cost_usd, timestamp: r.timestamp, dyad_id: r.dyad_id, message_count: r.message_count,
+            }));
+          }
+          return rows; // SELECT * for export
+        }
+        if (norm.includes('FROM llm_call_history')) return byTimestampDesc(tables.llm_call_history);
+        if (norm.includes('FROM cost_ledger')) return byTimestampDesc(tables.cost_ledger);
+        if (norm.includes('FROM ingestion_checkpoints')) return byTimestampDesc(tables.ingestion_checkpoints, 'updated_at');
+        if (norm.includes('FROM migrations')) {
+          return [...tables.migrations].sort((a, b) => a.version - b.version);
+        }
+        return [];
+      },
+    };
   }
 }
 
@@ -108,6 +286,8 @@ export class GAgentPersistenceManager {
   private logger: StructuredLogger;
   private backupDir: string;
   private backupRetentionCount: number;
+  /** True when running on the volatile in-memory fallback (no native SQLite). */
+  public readonly inMemory: boolean = false;
 
   constructor(dbPath?: string) {
     this.logger = new StructuredLogger('gagent-persistence');
@@ -119,6 +299,9 @@ export class GAgentPersistenceManager {
     fs.mkdirSync(dataDir, { recursive: true });
     try {
       this.db = openDatabase(this.dbPath);
+      // openDatabase returns an InMemoryDatabase shim when no native SQLite
+      // driver could be loaded (and GAGENT_REQUIRE_SQLITE !== '1').
+      (this as { inMemory: boolean }).inMemory = this.db?.__inMemory === true;
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       this.initializeSchema();
@@ -327,6 +510,21 @@ export class GAgentPersistenceManager {
 
   backup(destinationPath?: string): string {
     fs.mkdirSync(this.backupDir, { recursive: true });
+    if (this.inMemory) {
+      // No native DB file to copy; serialize the volatile in-memory state to a
+      // JSON artifact so the backup command still produces something usable.
+      const backupPath = destinationPath || path.join(
+        this.backupDir,
+        `gagent-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+      );
+      fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+      fs.writeFileSync(backupPath, JSON.stringify({
+        schema_version: this.SCHEMA_VERSION,
+        exported_at: new Date().toISOString(),
+        tables: this.db.dumpTables(),
+      }, null, 2));
+      return backupPath;
+    }
     const backupPath = destinationPath || path.join(
       this.backupDir,
       `gagent-${new Date().toISOString().replace(/[:.]/g, '-')}.db`
@@ -341,6 +539,14 @@ export class GAgentPersistenceManager {
   restore(sourcePath: string): void {
     if (!fs.existsSync(sourcePath)) {
       throw new Error(`Backup does not exist: ${sourcePath}`);
+    }
+    if (this.inMemory) {
+      // Restore a JSON backup into the in-memory store. If the backup is a
+      // native .db file (created on a host that had better-sqlite3) we cannot
+      // read it here, so accept only JSON snapshots in fallback mode.
+      const snapshot = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
+      this.db.loadTables(snapshot.tables || {});
+      return;
     }
     this.db.close();
     // Remove the existing DB file and any stale WAL/SHM sidecar files left by

@@ -33533,10 +33533,159 @@ var require_gagent_persistence = __commonJS({
             close: () => bunDb.close()
           };
         } catch (_bunErr) {
-          throw betterErr;
+          if (process.env.GAGENT_REQUIRE_SQLITE === "1") {
+            throw betterErr;
+          }
+          return new InMemoryDatabase();
         }
       }
     }
+    var InMemoryDatabase = class {
+      tables = {
+        schema_version: [],
+        migrations: [],
+        agent_runs: [],
+        escalation_metrics: [],
+        llm_call_history: [],
+        cost_ledger: [],
+        ingestion_checkpoints: []
+      };
+      /** Marker so the manager can detect the volatile fallback. */
+      __inMemory = true;
+      /** Snapshot every table (used to serialize a JSON backup). */
+      dumpTables() {
+        return JSON.parse(JSON.stringify(this.tables));
+      }
+      /** Replace table contents from a snapshot (used to restore a JSON backup). */
+      loadTables(snapshot) {
+        for (const key of Object.keys(this.tables)) {
+          if (Array.isArray(snapshot[key])) {
+            this.tables[key] = snapshot[key];
+          }
+        }
+      }
+      pragma(_directive) {
+        return void 0;
+      }
+      exec(_sql) {
+      }
+      transaction(operation) {
+        return (...args) => operation(...args);
+      }
+      close() {
+      }
+      prepare(sql) {
+        const norm = sql.replace(/\s+/g, " ").trim();
+        const tables = this.tables;
+        const upsert = (table, keyField, row) => {
+          const idx = table.findIndex((r) => r[keyField] === row[keyField]);
+          if (idx >= 0)
+            table[idx] = row;
+          else
+            table.push(row);
+        };
+        const byTimestampDesc = (rows, field = "timestamp") => [...rows].sort((a, b) => String(b[field]).localeCompare(String(a[field])));
+        return {
+          run: (...params) => {
+            if (norm.includes("INSERT OR REPLACE INTO schema_version")) {
+              upsert(tables.schema_version, "version", { version: params[0], applied_at: params[1] });
+            } else if (norm.includes("INSERT OR REPLACE INTO migrations") || norm.includes("INSERT INTO migrations")) {
+              upsert(tables.migrations, "version", { version: params[0], name: params[1], applied_at: params[2] });
+            } else if (norm.includes("INSERT OR REPLACE INTO agent_runs")) {
+              upsert(tables.agent_runs, "run_id", {
+                run_id: params[0],
+                task: params[1],
+                output: params[2],
+                exit_code: params[3],
+                cost_usd: params[4],
+                timestamp: params[5],
+                dyad_id: params[6],
+                message_count: params[7]
+              });
+            } else if (norm.includes("INSERT OR REPLACE INTO escalation_metrics")) {
+              upsert(tables.escalation_metrics, "key", { key: "current", value_json: params[0], updated_at: params[1] });
+            } else if (norm.includes("INSERT OR REPLACE INTO llm_call_history")) {
+              upsert(tables.llm_call_history, "id", {
+                id: params[0],
+                model_id: params[1],
+                input_tokens: params[2],
+                output_tokens: params[3],
+                cost_usd: params[4],
+                operation: params[5],
+                timestamp: params[6],
+                metadata_json: params[7]
+              });
+            } else if (norm.includes("INSERT OR REPLACE INTO cost_ledger")) {
+              upsert(tables.cost_ledger, "id", {
+                id: params[0],
+                operation: params[1],
+                model_id: params[2],
+                cost_usd: params[3],
+                timestamp: params[4],
+                metadata_json: params[5]
+              });
+            } else if (norm.includes("INSERT OR REPLACE INTO ingestion_checkpoints")) {
+              upsert(tables.ingestion_checkpoints, "source", { source: params[0], last_rowid: params[1], updated_at: params[2] });
+            }
+            return { changes: 1 };
+          },
+          get: (...params) => {
+            if (norm.includes("MAX(version) AS version FROM schema_version")) {
+              return tables.schema_version.length ? { version: Math.max(...tables.schema_version.map((r) => r.version)) } : { version: null };
+            }
+            if (norm.includes("value_json FROM escalation_metrics")) {
+              const row = tables.escalation_metrics.find((r) => r.key === "current");
+              return row ? { value_json: row.value_json } : void 0;
+            }
+            if (norm.includes("FROM agent_runs") && norm.includes("WHERE run_id = ?")) {
+              return tables.agent_runs.find((r) => r.run_id === params[0]) || void 0;
+            }
+            if (norm.includes("last_rowid FROM ingestion_checkpoints")) {
+              const row = tables.ingestion_checkpoints.find((r) => r.source === params[0]);
+              return row ? { last_rowid: row.last_rowid } : void 0;
+            }
+            return void 0;
+          },
+          all: (...params) => {
+            if (norm.includes("FROM agent_runs")) {
+              if (norm.includes("WHERE timestamp >= ? AND timestamp <= ?")) {
+                return byTimestampDesc(tables.agent_runs).filter((r) => r.timestamp >= params[0] && r.timestamp <= params[1]).map((r) => ({
+                  run_id: r.run_id,
+                  task: r.task,
+                  exit_code: r.exit_code,
+                  cost_usd: r.cost_usd,
+                  timestamp: r.timestamp
+                }));
+              }
+              const rows = byTimestampDesc(tables.agent_runs);
+              if (norm.includes("LIMIT ?")) {
+                return rows.slice(0, params[0]).map((r) => ({
+                  run_id: r.run_id,
+                  task: r.task,
+                  output: r.output,
+                  exit_code: r.exit_code,
+                  cost_usd: r.cost_usd,
+                  timestamp: r.timestamp,
+                  dyad_id: r.dyad_id,
+                  message_count: r.message_count
+                }));
+              }
+              return rows;
+            }
+            if (norm.includes("FROM llm_call_history"))
+              return byTimestampDesc(tables.llm_call_history);
+            if (norm.includes("FROM cost_ledger"))
+              return byTimestampDesc(tables.cost_ledger);
+            if (norm.includes("FROM ingestion_checkpoints"))
+              return byTimestampDesc(tables.ingestion_checkpoints, "updated_at");
+            if (norm.includes("FROM migrations")) {
+              return [...tables.migrations].sort((a, b) => a.version - b.version);
+            }
+            return [];
+          }
+        };
+      }
+    };
     var GAgentPersistenceManager = class {
       db;
       dbPath;
@@ -33544,6 +33693,8 @@ var require_gagent_persistence = __commonJS({
       logger;
       backupDir;
       backupRetentionCount;
+      /** True when running on the volatile in-memory fallback (no native SQLite). */
+      inMemory = false;
       constructor(dbPath) {
         this.logger = new logger_js_1.StructuredLogger("gagent-persistence");
         const resolvedPath = dbPath || process.env.GAGENT_DB_PATH || path.join(os.homedir(), ".gagent", "gagent.db");
@@ -33554,6 +33705,7 @@ var require_gagent_persistence = __commonJS({
         fs.mkdirSync(dataDir, { recursive: true });
         try {
           this.db = openDatabase(this.dbPath);
+          this.inMemory = this.db?.__inMemory === true;
           this.db.pragma("journal_mode = WAL");
           this.db.pragma("foreign_keys = ON");
           this.initializeSchema();
@@ -33696,6 +33848,16 @@ var require_gagent_persistence = __commonJS({
       }
       backup(destinationPath) {
         fs.mkdirSync(this.backupDir, { recursive: true });
+        if (this.inMemory) {
+          const backupPath2 = destinationPath || path.join(this.backupDir, `gagent-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.json`);
+          fs.mkdirSync(path.dirname(backupPath2), { recursive: true });
+          fs.writeFileSync(backupPath2, JSON.stringify({
+            schema_version: this.SCHEMA_VERSION,
+            exported_at: (/* @__PURE__ */ new Date()).toISOString(),
+            tables: this.db.dumpTables()
+          }, null, 2));
+          return backupPath2;
+        }
         const backupPath = destinationPath || path.join(this.backupDir, `gagent-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.db`);
         fs.mkdirSync(path.dirname(backupPath), { recursive: true });
         this.db.pragma("wal_checkpoint(TRUNCATE)");
@@ -33706,6 +33868,11 @@ var require_gagent_persistence = __commonJS({
       restore(sourcePath) {
         if (!fs.existsSync(sourcePath)) {
           throw new Error(`Backup does not exist: ${sourcePath}`);
+        }
+        if (this.inMemory) {
+          const snapshot = JSON.parse(fs.readFileSync(sourcePath, "utf8"));
+          this.db.loadTables(snapshot.tables || {});
+          return;
         }
         this.db.close();
         for (const suffix of ["", "-wal", "-shm", "-journal"]) {
