@@ -23,13 +23,22 @@ export class AgentSDK {
     this.llmClient = new LLMClient(clientConfig);
     this.model = options.model ?? 'claude-haiku-4-5-20251001';
 
-    // PIIRedactor.redact() expects a RawMessage; for plain-text use redactText()
+    // PIIRedactor.redact() expects a RawMessage; for plain-text use redactText().
+    // Align defaults with the documented PII categories: phones/emails and
+    // locations are redacted by default. Names are redacted when a known-names
+    // list is supplied (regex-only redaction cannot reliably detect arbitrary
+    // names without an NER model — see issue #52).
+    const knownNames = (process.env.GAGENT_PII_KNOWN_NAMES || '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
     this.redactor = options.piiProtection !== false
       ? new PIIRedactor({
           redact_phone_numbers: true,
-          redact_names: false,
-          redact_locations: false,
+          redact_names: knownNames.length > 0,
+          redact_locations: true,
           hash_contact_ids: false,
+          knownNames,
         })
       : null;
 
@@ -39,7 +48,7 @@ export class AgentSDK {
       : null;
   }
 
-  async execute(task: string): Promise<{ output: string; cost_usd: number; safe: boolean }> {
+  async execute(task: string): Promise<{ output: string; cost_usd: number; safe: boolean; error?: string }> {
     // 1. PII redact — use redactText() for plain strings
     let safeTask = task;
     if (this.redactor) {
@@ -63,12 +72,19 @@ export class AgentSDK {
       }
     }
 
-    // 3. Execute via LLM
+    // 3. Execute via LLM. Never assert safe:true when the call failed — a
+    //    failure means no safe output was produced. Surface the cause so callers
+    //    can distinguish a real empty answer from an outage/auth/budget error.
     try {
       const result = await this.llmClient.call(safeTask, { model: this.model });
       return { output: result.content, cost_usd: result.cost_usd, safe: true };
-    } catch {
-      return { output: '', cost_usd: 0, safe: true };
+    } catch (error) {
+      return {
+        output: '',
+        cost_usd: 0,
+        safe: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 }

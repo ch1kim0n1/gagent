@@ -47,8 +47,11 @@ function openDatabase(dbPath: string): any {
   } catch (betterErr) {
     // Fall through to bun:sqlite
     try {
+      // bun:sqlite is only resolvable under the Bun runtime; require dynamically
+      // so a Node/tsc build does not need its type declarations. The Node path
+      // (better-sqlite3) above is canonical.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+      const { Database } = require('bun:sqlite') as { Database: new (path: string) => any };
       const bunDb = new Database(dbPath);
       return {
         exec: (sql: string) => bunDb.exec(sql),

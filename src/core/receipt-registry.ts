@@ -17,6 +17,20 @@ interface ReceiptSchemaMetadata {
   retention_days: number;
 }
 
+// Reuse a single redactor across receipts (hot path). Rebuild only if the
+// known-names env input changes, to avoid per-receipt construction / env parsing.
+let cachedDyadRedactor: ReturnType<typeof defaultDyadRedactor> | null = null;
+let cachedDyadRedactorEnvKey: string | null = null;
+
+function getDyadRedactor(): ReturnType<typeof defaultDyadRedactor> {
+  const envKey = process.env.DYAD_KNOWN_NAMES || '';
+  if (!cachedDyadRedactor || cachedDyadRedactorEnvKey !== envKey) {
+    cachedDyadRedactor = defaultDyadRedactor();
+    cachedDyadRedactorEnvKey = envKey;
+  }
+  return cachedDyadRedactor;
+}
+
 /**
  * Simple PII redaction for receipts
  */
@@ -32,7 +46,7 @@ function redactPII(receipt: any): any {
   const redacted = { ...receipt };
   const hashFields = new Set(['receipt_id', 'rubric_sha8', 'input_hash', 'config_hash', 'corpus_sha8']);
   const dyadRedactionEnabled = process.env.DYAD_PII_REDACTION !== 'false';
-  const dyadRedactor = defaultDyadRedactor();
+  const dyadRedactor = getDyadRedactor();
 
   if (!dyadRedactionEnabled) {
     coreLogger.warn('DYAD PII redaction is disabled for development use');
@@ -70,24 +84,46 @@ function redactPII(receipt: any): any {
 }
 
 /**
- * Sign a receipt with HMAC-SHA256 for tamper detection
+ * Canonical JSON serialization: recursively sorts object keys so the signed
+ * content is stable across processes/versions regardless of insertion order.
+ * (Number formatting follows JSON.stringify, which is deterministic for the
+ * finite numbers used in receipts.)
+ */
+export function canonicalJSON(value: any): string {
+  return JSON.stringify(canonicalize(value));
+}
+
+function canonicalize(value: any): any {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value && typeof value === 'object') {
+    const sorted: Record<string, any> = {};
+    for (const key of Object.keys(value).sort()) {
+      sorted[key] = canonicalize(value[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
+/**
+ * Sign a receipt with HMAC-SHA256 (over canonical JSON) for tamper detection.
  */
 function signReceipt(receipt: any, key: string): string {
   const hmac = crypto.createHmac('sha256', key);
-  const content = JSON.stringify(receipt);
-  hmac.update(content);
+  hmac.update(canonicalJSON(receipt));
   return hmac.digest('hex');
 }
 
 /**
- * Verify a receipt signature
+ * Verify a receipt signature against canonical JSON.
  */
 function verifyReceipt(receipt: any, signature: string, key: string): boolean {
   const hmac = crypto.createHmac('sha256', key);
-  const content = JSON.stringify(receipt);
-  hmac.update(content);
+  hmac.update(canonicalJSON(receipt));
   const expected = hmac.digest('hex');
-  if (expected.length !== signature.length) {
+  if (typeof signature !== 'string' || expected.length !== signature.length) {
     return false;
   }
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
@@ -216,14 +252,8 @@ export class ReceiptRegistry {
       const lastLine = lines[lines.length - 1];
       const receipt = this.migrateReceipt(JSON.parse(lastLine));
       
-      // Verify signature if present
-      if (receipt._signature && this.signatureKey) {
-        const { _signature, _signed_at, ...data } = receipt;
-        if (!verifyReceipt(data, _signature, this.signatureKey)) {
-          coreLogger.warn('Last receipt signature verification failed');
-        }
-      }
-      
+      this.assertSignatureValid(receipt);
+
       return receipt as ExecutionReceipt;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -247,13 +277,7 @@ export class ReceiptRegistry {
             continue;
           }
 
-          // Verify signature if present
-          if ((receipt as any)._signature && this.signatureKey) {
-            const { _signature, _signed_at, ...data } = receipt as any;
-            if (!verifyReceipt(data, _signature, this.signatureKey)) {
-              coreLogger.warn('Receipt signature verification failed', { timestamp: receipt.timestamp });
-            }
-          }
+          this.assertSignatureValid(receipt);
           receipts.push(receipt);
         }
       }
@@ -348,6 +372,31 @@ export class ReceiptRegistry {
     }
   }
 
+  /**
+   * When a signature key is configured, every receipt MUST carry a valid
+   * `_signature`. A missing or invalid signature is treated as a hard integrity
+   * failure (tamper / stripped signature), not a warning. Without a key, no
+   * verification is performed.
+   */
+  private assertSignatureValid(receipt: any): void {
+    if (!this.signatureKey) {
+      return;
+    }
+    const signature = receipt?._signature;
+    if (!signature) {
+      throw new Error(
+        `Receipt integrity failure: missing _signature while signing key is configured (receipt_id=${receipt?.receipt_id ?? 'unknown'})`,
+      );
+    }
+    const { _signature, _signed_at, ...data } = receipt;
+    void _signed_at;
+    if (!verifyReceipt(data, _signature, this.signatureKey)) {
+      throw new Error(
+        `Receipt integrity failure: invalid _signature (receipt_id=${receipt?.receipt_id ?? 'unknown'})`,
+      );
+    }
+  }
+
   private prepareReceipt(receipt: any): any {
     const migrated = this.migrateReceipt(receipt);
     const timestampMs = new Date(migrated.timestamp).getTime();
@@ -356,11 +405,30 @@ export class ReceiptRegistry {
       ...migrated,
       metadata: {
         ...(migrated.metadata || {}),
-        corpus_sha8: migrated.metadata?.corpus_sha8 || migrated.input_hash.substring(0, 8),
+        corpus_sha8:
+          migrated.metadata?.corpus_sha8 || this.deriveCorpusSha8(migrated),
         expires_at: migrated.metadata?.expires_at || expiresAt,
         retention_days: this.RETENTION_DAYS,
       },
     };
+  }
+
+  /**
+   * Deterministically derive an 8-char corpus hash for a receipt. Prefers an
+   * existing string `input_hash`; otherwise computes a SHA-256 over the receipt
+   * content so a missing/invalid `input_hash` can never throw.
+   */
+  private deriveCorpusSha8(receipt: any): string {
+    if (typeof receipt?.input_hash === 'string' && receipt.input_hash.length > 0) {
+      return receipt.input_hash.substring(0, 8);
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(receipt);
+    } catch {
+      serialized = String(receipt?.receipt_id ?? '');
+    }
+    return crypto.createHash('sha256').update(serialized).digest('hex').substring(0, 8);
   }
 
   private migrateReceipt(receipt: any): any {
@@ -451,6 +519,25 @@ export class ReceiptRegistry {
     }
   }
 
+  // A lock older than this is considered stale (writer crashed) and reclaimed.
+  private readonly LOCK_STALE_MS = parseInt(process.env.GAGENT_RECEIPT_LOCK_STALE_MS || '10000', 10);
+
+  private async reclaimStaleLock(lockPath: string): Promise<boolean> {
+    try {
+      const stat = await fs.stat(lockPath);
+      const age = Date.now() - stat.mtimeMs;
+      if (age >= this.LOCK_STALE_MS) {
+        coreLogger.warn('Reclaiming stale receipt lock', { lockPath, ageMs: age });
+        await fs.rm(lockPath, { recursive: true, force: true });
+        return true;
+      }
+    } catch (error) {
+      // Lock vanished between checks — treat as reclaimable.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    }
+    return false;
+  }
+
   private async withReceiptLock<T>(operation: () => Promise<T>): Promise<T> {
     const lockPath = `${this.basePath}.lock`;
     const deadline = Date.now() + 5000;
@@ -460,7 +547,16 @@ export class ReceiptRegistry {
         await fs.mkdir(lockPath);
         break;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || Date.now() > deadline) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          throw error;
+        }
+        // Stale-lock recovery: a crashed writer leaves the lock dir behind.
+        // Reclaim it instead of failing forever once it is older than the TTL.
+        const reclaimed = await this.reclaimStaleLock(lockPath);
+        if (reclaimed) {
+          continue;
+        }
+        if (Date.now() > deadline) {
           throw error;
         }
         await new Promise(resolve => setTimeout(resolve, 50));

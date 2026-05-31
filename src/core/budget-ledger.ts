@@ -51,6 +51,7 @@ export class BudgetLedger {
   async init(): Promise<void> {
     await fs.promises.mkdir(this.auditDir, { recursive: true });
     await this.loadSpendFile(this.spendLedgerPath());
+    this.loadReservationsSync();
   }
 
   reserve(
@@ -59,31 +60,38 @@ export class BudgetLedger {
     ttlMs?: number,
     metadata?: Record<string, any>,
   ): BudgetReservation {
-    this.cleanupExpired();
-    const scope = typeof metadata?.scope === 'string' ? metadata.scope : 'default';
-    const scopeCap = this.config.scope_caps_usd?.[scope];
-    if (scopeCap !== undefined && this.getScopeSpend(scope) + amountUsd > scopeCap) {
-      throw new Error(`Scope budget exceeded for ${scope}: requested $${amountUsd.toFixed(4)}, cap $${scopeCap.toFixed(4)}`);
-    }
+    // Serialize reserve across processes sharing the audit dir and re-read
+    // peer state from disk so concurrent processes cannot each independently
+    // believe budget is available and overspend the global cap.
+    return this.withLedgerLock(() => {
+      this.refreshFromDisk();
+      this.cleanupExpired();
+      const scope = typeof metadata?.scope === 'string' ? metadata.scope : 'default';
+      const scopeCap = this.config.scope_caps_usd?.[scope];
+      if (scopeCap !== undefined && this.getScopeSpend(scope) + amountUsd > scopeCap) {
+        throw new Error(`Scope budget exceeded for ${scope}: requested $${amountUsd.toFixed(4)}, cap $${scopeCap.toFixed(4)}`);
+      }
 
-    const status = this.getStatus();
-    if (amountUsd > status.remaining_budget) {
-      throw new Error(`Budget exceeded: requested $${amountUsd.toFixed(4)}, remaining $${status.remaining_budget.toFixed(4)}`);
-    }
+      const status = this.getStatus();
+      if (amountUsd > status.remaining_budget) {
+        throw new Error(`Budget exceeded: requested $${amountUsd.toFixed(4)}, remaining $${status.remaining_budget.toFixed(4)}`);
+      }
 
-    const now = new Date();
-    const reservation: BudgetReservation = {
-      id: `res_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
-      operation,
-      reserved_usd: amountUsd,
-      committed_usd: 0,
-      created_at: now.toISOString(),
-      expires_at: new Date(now.getTime() + (ttlMs ?? this.config.default_ttl_ms!)).toISOString(),
-      status: 'reserved',
-      metadata,
-    };
-    this.reservations.set(reservation.id, reservation);
-    return reservation;
+      const now = new Date();
+      const reservation: BudgetReservation = {
+        id: `res_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        operation,
+        reserved_usd: amountUsd,
+        committed_usd: 0,
+        created_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + (ttlMs ?? this.config.default_ttl_ms!)).toISOString(),
+        status: 'reserved',
+        metadata,
+      };
+      this.reservations.set(reservation.id, reservation);
+      this.persistReservationsSync();
+      return reservation;
+    });
   }
 
   async commit(
@@ -98,6 +106,7 @@ export class BudgetLedger {
     reservation.status = 'committed';
     reservation.committed_usd = actualCostUsd;
     this.reservations.set(reservationId, reservation);
+    this.persistReservationsSync();
 
     if (spend) {
       await this.recordSpend({
@@ -117,6 +126,7 @@ export class BudgetLedger {
     }
     reservation.status = 'released';
     this.reservations.set(reservationId, reservation);
+    this.persistReservationsSync();
     return reservation;
   }
 
@@ -216,6 +226,114 @@ export class BudgetLedger {
 
   private spendLedgerPath(): string {
     return path.join(this.auditDir, 'spend-ledger.jsonl');
+  }
+
+  private reservationsPath(): string {
+    return path.join(this.auditDir, 'reservations.json');
+  }
+
+  private lockPath(): string {
+    return path.join(this.auditDir, 'ledger.lock');
+  }
+
+  /**
+   * Serialize a critical section across processes using a mkdir-based lock with
+   * stale recovery. Synchronous so callers of `reserve()` stay synchronous.
+   */
+  private withLedgerLock<T>(fn: () => T): T {
+    const lock = this.lockPath();
+    const staleMs = Number(process.env.GAGENT_BUDGET_LOCK_STALE_MS || '5000');
+    const deadline = Date.now() + Number(process.env.GAGENT_BUDGET_LOCK_WAIT_MS || '5000');
+    try { fs.mkdirSync(this.auditDir, { recursive: true }); } catch { /* ignore */ }
+    // Acquire
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        fs.mkdirSync(lock);
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        // Stale-lock recovery.
+        try {
+          const stat = fs.statSync(lock);
+          if (Date.now() - stat.mtimeMs >= staleMs) {
+            fs.rmSync(lock, { recursive: true, force: true });
+            continue;
+          }
+        } catch {
+          continue; // lock vanished
+        }
+        if (Date.now() > deadline) {
+          throw new Error('BudgetLedger: timed out acquiring ledger lock');
+        }
+        // Busy-wait briefly (sync) to keep reserve() synchronous.
+        const until = Date.now() + 20;
+        while (Date.now() < until) { /* spin */ }
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      try { fs.rmSync(lock, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+
+  /** Re-read peer-visible state (committed spend + active reservations) from disk. */
+  private refreshFromDisk(): void {
+    this.reloadSpendSync();
+    this.loadReservationsSync();
+  }
+
+  private reloadSpendSync(): void {
+    try {
+      const content = fs.readFileSync(this.spendLedgerPath(), 'utf8');
+      const spend: SpendEntry[] = [];
+      for (const line of content.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        const parsed = JSON.parse(line);
+        const entry = parsed.type === 'spend' && parsed.data ? parsed.data : parsed;
+        if (typeof entry.cost_usd === 'number' && typeof entry.timestamp === 'string') {
+          spend.push(entry);
+        }
+      }
+      this.spend = spend;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  private loadReservationsSync(): void {
+    try {
+      const content = fs.readFileSync(this.reservationsPath(), 'utf8');
+      const parsed = JSON.parse(content) as BudgetReservation[];
+      if (Array.isArray(parsed)) {
+        for (const r of parsed) {
+          if (r && typeof r.id === 'string') {
+            // Local in-flight reservations always win over the on-disk snapshot.
+            if (!this.reservations.has(r.id)) {
+              this.reservations.set(r.id, r);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  private persistReservationsSync(): void {
+    try {
+      fs.mkdirSync(this.auditDir, { recursive: true });
+      // Only persist reservations that still affect budget accounting.
+      const active = Array.from(this.reservations.values()).filter(
+        r => r.status === 'reserved' || r.status === 'committed',
+      );
+      const tmp = `${this.reservationsPath()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(active), 'utf8');
+      fs.renameSync(tmp, this.reservationsPath());
+    } catch {
+      // Best-effort durability; never block a run on the snapshot write.
+    }
   }
 
   private rollupPath(timestamp: string): string {

@@ -12,7 +12,23 @@ export interface PIIRedactionConfig {
   knownNames?: string[];
 }
 
-const PHONE_PATTERN = /(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}/g;
+// Phone matching. To avoid false positives on bare 7-digit IDs / order numbers
+// (e.g. "555-1234"), a match requires phone-like structure:
+//   - an international "+<country>" prefix, OR
+//   - a parenthesized area code, OR
+//   - a full 10-digit national number with separators.
+// Word boundaries prevent matching inside longer digit runs (timestamps, IDs).
+const PHONE_PATTERN = new RegExp(
+  [
+    // +CC (area) NNN-NNNN  or  +CC NNN NNN NNNN, etc.
+    '\\+\\d{1,3}[\\s.-]?(?:\\(?\\d{1,4}\\)?[\\s.-]?){1,3}\\d{3,4}',
+    // (AAA) NNN-NNNN
+    '\\(\\d{3}\\)[\\s.-]?\\d{3}[\\s.-]?\\d{4}',
+    // AAA-NNN-NNNN / AAA.NNN.NNNN / AAA NNN NNNN (10 digits, separated)
+    '\\b\\d{3}[\\s.-]\\d{3}[\\s.-]\\d{4}\\b',
+  ].join('|'),
+  'g',
+);
 const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const STREET_PATTERN = /\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,4}\s+(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Way|Court|Ct)\b/gi;
 const ZIP_PATTERN = /\b\d{5}(?:-\d{4})?\b/g;

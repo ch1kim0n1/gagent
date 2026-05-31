@@ -118,7 +118,11 @@ export class ToolRegistry {
       });
 
       proc.on('close', (code) => {
-        resolve({ stdout, stderr });
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(new Error(stderr.trim() || `command "${command}" exited with code ${code}`));
+        }
       });
 
       proc.on('error', reject);
