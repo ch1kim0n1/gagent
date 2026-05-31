@@ -58,11 +58,23 @@ interface DaemonExecutionConfig {
   poll_interval_ms: number;      // e.g. 5000
   checkpoint_key: string;        // cursor for resume-from-last-message
   on_message: (msg: RawMessage) => Promise<void>;
+  poll?: (lastRowid: number) => Promise<RawMessage[]>;        // BYO source reader
+  max_attempts?: number;                                     // retries before dead-letter (default 3)
+  on_dead_letter?: (msg: RawMessage, error: unknown) => Promise<void>;
 }
 
 // CLI addition needed:
 // gagent daemon --source imessage --interval 5000
 ```
+
+> **Implementation status (BYO-poller):** `DaemonRunner` does **not** ship a
+> built-in `chat.db` reader. The caller injects a `poll(lastRowid)` callback
+> that returns new messages; `imessage-daemon.ts` is the intended home for a
+> concrete iMessage poller. The runner guarantees **at-least-once** delivery:
+> the ingestion checkpoint only advances past a message after `on_message`
+> succeeds (or, when configured, after `on_dead_letter` accepts it). Failed
+> messages are retried with backoff and never silently skipped; `poll()`
+> errors are caught and retried so the loop survives transient failures.
 
 **Files to create:** `src/core/daemon-runner.ts`, `src/modes/imessage-daemon.ts`
 **File to modify:** `src/cli.ts` — add `daemon` command
@@ -137,22 +149,37 @@ interface DyadAnalysisTask {
 **File to create:** `src/handlers/dyad-analysis-handler.ts`
 
 ### 6. Cost Hard Gate
-Currently GAgent tracks cost but never fails a run if budget is exceeded. For DYAD, add:
+The pipeline enforces a per-run cost hard gate. When a run supplies `budgetUsd`,
+that value is the ceiling. When it does **not**, the run is **not** unbounded:
+a safe default ceiling (`GAGENT_DEFAULT_RUN_BUDGET_USD`, default **$1.00**) is
+enforced instead. Exceeding the ceiling throws:
 
 ```typescript
-// In src/pipeline/orchestrator.ts
-if (totalCostUsd > this.config.budget.max_cost_usd) {
-  throw new Error(`Cost hard gate: $${totalCostUsd.toFixed(4)} exceeds budget $${this.config.budget.max_cost_usd}`);
+// In src/pipeline/orchestrator.ts (enforceActiveRunBudget)
+if (actualCostUsd > this.activeRunBudget.maxCostUsd) {
+  throw new Error(`Cost hard gate: $${actualCostUsd.toFixed(4)} exceeds budget $${this.activeRunBudget.maxCostUsd.toFixed(4)}`);
 }
 ```
 
+A separate global `BudgetLedger` (`cost_budget_usd_per_hour`, default $20) caps
+cumulative spend per process and also fails closed when exhausted.
+
 ---
 
+## Importable API surface
+The package builds to a flat `dist/` layout and exposes these subpaths
+(all resolve to real built files): `gagent` / `gagent/sdk` (the SDK),
+`gagent/pii` & `gagent/PIIRedactor`, `gagent/ethics` & `gagent/EthicalClassifier`,
+and `gagent/client`. The `gagent` bin maps to `dist/cli.js`. `dist/` is built by
+the `prepack`/`prepublishOnly` hooks so the published tarball always ships code.
+
 ## Configuration
-- `RECEIPT_SIGNATURE_KEY` — optional HMAC key for signing receipts
+- `RECEIPT_SIGNATURE_KEY` / `receipt_signature_key` — optional HMAC key for signing receipts (when set, receipts with a missing/invalid signature are rejected as integrity failures)
 - `GAGENT_DB_PATH` — override default `~/.gagent/gagent.db`
 - `DYAD_PII_REDACTION` — `true` to enable PII redaction (required for DYAD)
 - `GAGENT_DAEMON_INTERVAL_MS` — polling interval for daemon mode
+- `GAGENT_DEFAULT_RUN_BUDGET_USD` — default per-run cost ceiling when no `budgetUsd` is supplied (default 1.0)
+- `GAGENT_ALLOW_DEV_SECRET` — `true` to allow the insecure default MCP auth secret for local dev only (otherwise auth fails closed)
 
 ## Persistence
 - SQLite: `~/.gagent/gagent.db` (`GAgentPersistenceManager`)

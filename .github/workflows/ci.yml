@@ -1,12 +1,69 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
   test:
+    name: Build & test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  coverage:
+    name: Jest coverage gate (canonical runner)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v1
-        with: { bun-version: 'latest' }
-      - run: bun install
-      - run: bun run build
-      - run: bun test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      # jest is the single canonical runner; this enforces the thresholds in jest.config.js.
+      - run: npm run test:coverage
+
+  package:
+    name: Package & install-from-tarball smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      # `prepack` builds dist; pack produces the real publishable tarball.
+      - name: npm pack
+        run: npm pack --silent | tail -n 1 > tarball.txt
+      - name: Assert tarball contains entry points
+        run: |
+          TARBALL="$(cat tarball.txt)"
+          echo "Tarball: $TARBALL"
+          FILES="$(tar -tzf "$TARBALL")"
+          echo "$FILES"
+          for f in package/dist/cli.js package/dist/sdk.js package/dist/client.js \
+                   package/dist/core/pii-redactor.js package/dist/core/ethical-refusal-classifier.js; do
+            echo "$FILES" | grep -qx "$f" || { echo "MISSING in tarball: $f"; exit 1; }
+          done
+      - name: Install tarball in a clean dir and smoke test
+        run: |
+          TARBALL="$(cat tarball.txt)"
+          ABS="$(pwd)/$TARBALL"
+          mkdir -p /tmp/smoke && cd /tmp/smoke
+          npm init -y >/dev/null 2>&1
+          # Skip native build of better-sqlite3 in the smoke env; entry resolution is what we verify.
+          npm install --ignore-scripts "$ABS"
+          # bin resolves and runs
+          npx gagent --version
+          # main + subpath exports resolve from the installed package
+          node -e "require('gagent'); require('gagent/sdk'); require('gagent/pii'); require('gagent/ethics'); require('gagent/client'); console.log('exports resolve OK');"
