@@ -8,7 +8,8 @@ describe('GAgent MCP Server', () => {
 
   it('declares the expected server identity', () => {
     expect(serverSource).toContain("name: 'gagent'");
-    expect(serverSource).toContain("version: '0.1.0'");
+    expect(serverSource).toContain('version: VERSION');
+    expect(serverSource).toContain("import { VERSION } from '../version.js'");
   });
 
   it('declares the expected tool names', () => {

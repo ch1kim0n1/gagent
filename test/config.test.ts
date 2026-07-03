@@ -3,6 +3,7 @@ import { GAgentConfig } from '../src/config/manager';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { VERSION } from '../src/version';
 
 describe('GAgentConfig', () => {
   it('loads defaults when no config file exists', () => {
@@ -11,7 +12,7 @@ describe('GAgentConfig', () => {
     expect(config).toBeDefined();
     const raw = config.getRaw();
     expect(raw).toBeDefined();
-    expect(raw.version).toBe('0.1.0');
+    expect(raw.version).toBe(VERSION);
   });
 
   it('isToolEnabled returns false for gbrain by default', () => {
@@ -88,7 +89,7 @@ describe('GAgentConfig', () => {
     const viewed = config.view();
     expect(typeof viewed).toBe('string');
     const parsed = JSON.parse(viewed);
-    expect(parsed.version).toBe('0.1.0');
+    expect(parsed.version).toBe(VERSION);
   });
 
   it('getRaw() returns the full config object', () => {
@@ -116,7 +117,7 @@ describe('GAgentConfig', () => {
     try {
       const config = new GAgentConfig({ configPath: tmpFile });
       const raw = config.getRaw();
-      expect(raw.version).toBe('0.1.0');
+      expect(raw.version).toBe(VERSION);
     } finally {
       fs.unlinkSync(tmpFile);
     }

@@ -13,6 +13,7 @@ import { Pipeline } from '../pipeline/orchestrator.js';
 import { GBrainIntegrationClient } from '../core/gbrain-integration.js';
 import { LocalAuditLogger, LocalLogger, type LogLevel } from '../core/observability.js';
 import { getDefaultSecretManager, PermissionModel } from '../core/security.js';
+import { VERSION } from '../version.js';
 
 // Simple auth middleware shim to replace @gstack/shared
 interface AuthMiddlewareConfig {
@@ -185,7 +186,7 @@ export async function startMcpServer(
   const server = new Server(
     {
       name: 'gagent',
-      version: '0.1.0',
+      version: VERSION,
     },
     {
       capabilities: {
