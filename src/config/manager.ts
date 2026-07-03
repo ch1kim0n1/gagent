@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
+import { VERSION } from '../version.js';
 
 const ConfigSchema = z.object({
   version: z.string(),
@@ -80,7 +81,7 @@ export class GAgentConfig {
 
   private defaultConfig(): GAgentConfigType {
     return {
-      version: '0.1.0',
+      version: VERSION,
       tools: {
         gbrain: { enabled: false },
         gstack: { enabled: false },

@@ -12,8 +12,7 @@ import { BenchmarkSample, memorySnapshotMb, summarizeBenchmark } from './core/pe
 import { createIMessageDaemon } from './modes/imessage-daemon.js';
 import { runLlmCommand } from './commands/run-llm.js';
 import { historyCommand } from './commands/history.js';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { version } = require('../package.json') as { version: string };
+import { VERSION } from './version.js';
 
 let _config: GAgentConfig | null = null;
 let _registry: ToolRegistry | null = null;
@@ -29,7 +28,7 @@ function getServices(): { config: GAgentConfig; registry: ToolRegistry; pipeline
 program
   .name('gagent')
   .description('Unified CLI for the six-tool agent stack')
-  .version(version);
+  .version(VERSION);
 
 // Core commands
 program

@@ -2,14 +2,19 @@
 import { describe, it, expect } from '@jest/globals';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 const execAsync = promisify(exec);
+const packageJson = JSON.parse(
+  readFileSync(join(__dirname, '..', 'package.json'), 'utf8')
+) as { version: string };
 
 describe('GAgent CLI', () => {
   it('version command returns version', async () => {
     try {
       const { stdout } = await execAsync('node dist/cli.js --version', { cwd: __dirname + '/..' });
-      expect(stdout).toContain('0.1.0');
+      expect(stdout.trim()).toBe(packageJson.version);
     } catch (error) {
       // CLI may not be built yet, skip
       expect(true).toBe(true);

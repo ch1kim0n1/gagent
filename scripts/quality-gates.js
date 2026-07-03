@@ -113,7 +113,7 @@ function checkMcpContract() {
     if (!server.includes(tool)) fail(`MCP server missing expected tool: ${tool}`);
   }
   if (!server.includes(`name: '${pkg.name}'`) && !server.includes(`name: \"${pkg.name}\"`)) fail('MCP server package name mismatch');
-  if (!server.includes("version: '0.1.0'") && !server.includes('version: \"0.1.0\"')) fail('MCP server version mismatch');
+  if (!server.includes('version: VERSION')) fail('MCP server version mismatch');
   ok('MCP contract');
 }
 
